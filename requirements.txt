@@ -1,0 +1,9 @@
+PySide6>=6.12
+ambr-py>=1.9
+aiohttp-client-cache>=0.15
+aiosqlite>=0.22
+loguru>=0.7
+pydantic>=2.11
+
+# only for building Record Book.exe (python build.py)
+pyinstaller>=6.22

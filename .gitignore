@@ -1,0 +1,20 @@
+# Your data (personal logs and settings)
+record_book.db
+journal.db
+
+# Downloaded game data and images (re-downloaded on launch)
+.cache/
+
+# Runtime crash log
+crash.log
+
+# Build output (python build.py)
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
