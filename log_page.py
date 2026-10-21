@@ -513,6 +513,8 @@ class RunItem(QFrame):
         super().__init__()
         self.setObjectName("RunItem")
         self.setProperty("best", "true" if best else "false")
+        # never taller than it needs (with a single run it used to stretch to fill the page)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.store = store
         self.index = index
         self.run_id = run["id"]
