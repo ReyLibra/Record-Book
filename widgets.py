@@ -31,10 +31,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QListWidget,
+    QToolButton,
     QWidget,
 )
 
 import gamedata
+import theme
 
 
 class SmoothScroller(QObject):
@@ -72,6 +74,8 @@ class SmoothScroller(QObject):
         area = obj.parent() if obj.parent() is not None else None
         if not isinstance(area, QAbstractScrollArea) or area.viewport() is not obj:
             return False
+        if area.property("paged"):  # scrolls a page at a time itself (Home)
+            return False
         return self._scroll(area, event)
 
     @staticmethod
@@ -107,10 +111,11 @@ class SmoothScroller(QObject):
             else:
                 area.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         running = self._animations.get(bar)
-        start_target = running[1] if running and running[0].state() == QAbstractAnimation.Running else bar.value()
+        active = bool(running) and running[0].state() == QAbstractAnimation.Running
+        start_target = running[1] if active else bar.value()
         target = max(bar.minimum(), min(bar.maximum(), round(start_target - steps * self.STEP_PX)))
-        if target == bar.value() and not running:
-            return False  # already at the end: let the outer area scroll instead
+        if abs(target - bar.value()) <= 1 and not active:
+            return False  # already at the end: let the outer area scroll instead (a finished glide doesn't count)
         if running:
             anim = running[0]
         else:
@@ -238,6 +243,23 @@ QMainWindow, #Root {{ background: {PAGE_BG}; }}
 #Dps:disabled {{ color: #6f7685; }}
 #Dps[empty="true"] {{ font-size: 12pt; font-weight: 600; color: {MUTED}; }}
 #Selector {{ background: rgba(28,29,34,0.92); border: 1px solid {PANEL_BORDER}; border-radius: 0; }}
+#ElementBoard {{ border: 1px solid {PANEL_BORDER}; border-radius: 0;
+                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(28,29,34,0.72), stop:1 rgba(20,21,25,0.96)); }}
+#ElementColumn {{ background: transparent; border: none; }}
+#ElementColumn[alt="true"] {{ background: rgba(255,255,255,0.035); }}
+#ColumnName {{ font-size: 10pt; font-weight: 800; }}
+#RowName {{ font-size: 9.5pt; color: #ffffff; }}
+#RowDps {{ font-size: 8pt; font-weight: 600; color: rgba(255,255,255,0.55); }}
+#GearIcon {{ background: rgba(12,13,16,0.6); border: 1px solid {PANEL_BORDER}; color: {MUTED}; font-size: 8pt; }}
+#ElementColumn QScrollArea, #ElementColumn QScrollArea > QWidget > QWidget {{ background: transparent; }}
+#ElementColumn #AddRow {{ padding: 4px 6px; font-size: 9pt; }}
+#ElementColumn #AddRow {{ background: transparent; border: none; }}
+#LinkBtn {{ text-align: left; padding: 6px 12px; }}
+QPushButton#ModeCycle {{ background: rgba(28,29,34,0.92); border: 1px solid {PANEL_BORDER}; padding: 8px 14px;
+                        color: {ACCENT}; font-weight: 700; }}
+QPushButton#ModeCycle:hover {{ border-color: {ACCENT}; }}
+#PageHint {{ background: transparent; border: none; color: {MUTED}; font-size: 9pt; padding: 2px 10px; }}
+#PageHint:hover {{ color: {ACCENT}; }}
 #SectionHeader {{ border: none; border-bottom: 2px solid {ACCENT}; padding-bottom: 6px; }}
 #SectionHeaderTitle {{ font-size: 15pt; font-weight: 700; color: #ffffff; }}
 #SectionHeaderNote {{ color: {MUTED}; font-size: 9.5pt; font-weight: 500; }}
@@ -270,6 +292,28 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QPlainTextEdit, QText
 }}
 QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{ border-color: {ACCENT}; }}
 QComboBox {{ background: {BUTTON_BG}; }}
+/* no arrow on any dropdown (like the talent levels): the box itself opens the list */
+QComboBox::drop-down, QDateEdit::drop-down {{ width: 0; border: none; }}
+QComboBox::down-arrow, QDateEdit::down-arrow {{ image: none; width: 0; }}
+QDateEdit {{ background: {BUTTON_BG}; }}
+QDateEdit::up-button, QDateEdit::down-button {{ width: 0; border: none; }}
+QDateEdit::up-arrow, QDateEdit::down-arrow {{ image: none; width: 0; }}
+/* the date picker's calendar, in the app's colours (so it follows light / dark and the theme too) */
+QCalendarWidget QWidget {{ background: {PANEL_BG}; color: #ffffff; alternate-background-color: {BUTTON_BG}; }}
+QCalendarWidget #qt_calendar_navigationbar {{ background: {BAR_BG}; border-bottom: 1px solid {PANEL_BORDER}; }}
+QCalendarWidget QToolButton {{ background: transparent; border: none; color: #ffffff; font-weight: 700;
+                               padding: 4px 8px; border-radius: 3px; }}
+QCalendarWidget QToolButton:hover {{ background: rgba(0,158,236,0.18); }}
+QCalendarWidget QToolButton::menu-indicator {{ image: none; width: 0; }}
+QCalendarWidget QToolButton#qt_calendar_prevmonth, QCalendarWidget QToolButton#qt_calendar_nextmonth {{ font-size: 14pt; }}
+QCalendarWidget QMenu {{ background: {PANEL_BG}; color: #ffffff; border: 1px solid {PANEL_BORDER}; }}
+QCalendarWidget QMenu::item:selected {{ background: rgba(0,158,236,0.35); }}
+QCalendarWidget QSpinBox {{ background: {BUTTON_BG}; color: #ffffff; border: 1px solid {PANEL_BORDER}; padding: 2px 6px;
+                            selection-background-color: rgba(0,158,236,0.45); }}
+QCalendarWidget QSpinBox::up-button, QCalendarWidget QSpinBox::down-button {{ width: 0; border: none; }}
+QCalendarWidget QAbstractItemView {{ background: {PANEL_BG}; color: #ffffff; outline: 0; border: none;
+                                     selection-background-color: {ACCENT}; selection-color: #ffffff; }}
+QCalendarWidget QAbstractItemView:disabled {{ color: rgba(255,255,255,0.3); }}
 QComboBox:disabled {{ background: #25262b; color: rgba(255,255,255,0.8); border-color: {BAR_BORDER}; }}
 /* talent levels: just the number until hovered (blue), a 1-15 list when clicked */
 QComboBox#TalentBox {{ background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 2px 8px;
@@ -306,6 +350,83 @@ QSlider::groove:horizontal {{ height: 4px; background: #3a3d46; border: none; }}
 QSlider::sub-page:horizontal {{ background: {ACCENT}; }}
 QSlider::handle:horizontal {{ background: {ACCENT}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
 """
+
+
+def themed_calendar(date_edit):
+    """A date box with no arrow: clicking it opens a calendar in the app's look (it follows light / dark
+    and the theme), and clicking a day picks it."""
+    date_edit.setCalendarPopup(False)  # (its step buttons stay, at no width: hiding them squeezes the date to nothing)
+    date_edit.setMinimumWidth(date_edit.fontMetrics().horizontalAdvance("0000-00-00") + 40)
+    date_edit.setCursor(Qt.PointingHandCursor)
+    date_edit._calendar_opener = _CalendarOpener(date_edit)
+    date_edit.installEventFilter(date_edit._calendar_opener)
+    date_edit.lineEdit().installEventFilter(date_edit._calendar_opener)
+    return date_edit
+
+
+def _style_calendar(calendar):
+    """Text arrows for the months (Qt's arrow icons are dark, lost on a dark background) and every day in
+    the normal text colour (not Qt's red weekends and dim weekdays)."""
+    from PySide6.QtGui import QBrush, QTextCharFormat
+
+    calendar.setGridVisible(False)
+    calendar.setVerticalHeaderFormat(calendar.VerticalHeaderFormat.NoVerticalHeader)
+    for name, text in (("qt_calendar_prevmonth", "\u2039"), ("qt_calendar_nextmonth", "\u203a")):
+        button = calendar.findChild(QToolButton, name)
+        if button is not None:
+            button.setIcon(QIcon())
+            button.setText(text)
+    plain = QTextCharFormat()
+    plain.setForeground(QBrush(QColor(theme.color("#e5e7ec"))))
+    for day in (Qt.Monday, Qt.Tuesday, Qt.Wednesday, Qt.Thursday, Qt.Friday, Qt.Saturday, Qt.Sunday):
+        calendar.setWeekdayTextFormat(day, plain)
+    header = QTextCharFormat()
+    header.setForeground(QBrush(QColor(theme.color("#8c909b"))))
+    calendar.setHeaderTextFormat(header)
+
+
+class _CalendarOpener(QObject):
+    def __init__(self, date_edit):
+        super().__init__(date_edit)
+        self.date_edit = date_edit
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+            self.open()
+            return True
+        if kind in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick):
+            return True
+        return False
+
+    def open(self):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QCalendarWidget
+
+        edit = self.date_edit
+        calendar = QCalendarWidget(edit)
+        calendar.setWindowFlags(Qt.Popup)
+        calendar.setAttribute(Qt.WA_DeleteOnClose)
+        _style_calendar(calendar)
+        calendar.setSelectedDate(edit.date())
+        calendar.setMinimumDate(edit.minimumDate())
+        calendar.setMaximumDate(edit.maximumDate())
+
+        def picked(day):
+            edit.setDate(day)
+            calendar.close()
+
+        calendar.clicked.connect(picked)
+        calendar.activated.connect(picked)
+        calendar.adjustSize()
+        below = edit.mapToGlobal(QPoint(edit.width() - calendar.width(), edit.height() + 4))
+        screen = edit.screen().availableGeometry()
+        if below.y() + calendar.height() > screen.bottom():  # no room below: open above the box
+            below.setY(edit.mapToGlobal(QPoint(0, 0)).y() - calendar.height() - 4)
+        below.setX(max(screen.left(), min(below.x(), screen.right() - calendar.width())))
+        calendar.move(below)
+        calendar.show()
+        self.calendar = calendar
 
 
 def section_header(title, note=""):
@@ -392,7 +513,7 @@ def rarity_gradient(rect, rarity, fallback=("#2c2d33", "#3a3d46")):
 
 
 def shape_icon(shape, color="#e8e6e3", size=48):
-    """Nav icons drawn in code: house, circle, square, triangle, book."""
+    """Nav icons drawn in code: house, circle, square, triangle, buff, book…"""
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -434,6 +555,20 @@ def shape_icon(shape, color="#e8e6e3", size=48):
         tip = QPointF(m + s * 0.75, m + s * 0.067)
         p.drawLine(tip, QPointF(tip.x() - s * 0.32, tip.y() + s * 0.02))
         p.drawLine(tip, QPointF(tip.x() - s * 0.02, tip.y() + s * 0.32))
+    elif shape == "buff":  # two stacked up-chevrons
+        for top in (m + s * 0.05, m + s * 0.5):
+            p.drawPolyline(QPolygonF([QPointF(m + s * 0.1, top + s * 0.4), QPointF(size / 2, top), QPointF(size - m - s * 0.1, top + s * 0.4)]))
+    elif shape == "gear":  # cog: a ring with eight teeth
+        import math
+
+        centre = QPointF(size / 2, size / 2)
+        for i in range(8):
+            a = math.pi / 4 * i
+            inner = QPointF(centre.x() + math.cos(a) * s * 0.33, centre.y() + math.sin(a) * s * 0.33)
+            outer = QPointF(centre.x() + math.cos(a) * s * 0.5, centre.y() + math.sin(a) * s * 0.5)
+            p.drawLine(inner, outer)
+        p.drawEllipse(centre, s * 0.33, s * 0.33)
+        p.drawEllipse(centre, s * 0.12, s * 0.12)
     elif shape == "book":
         p.setBrush(QColor(color))
         p.drawRoundedRect(QRectF(m, m, s, s), 4, 4)
@@ -460,6 +595,7 @@ class ImageTile(QWidget):
         self._badge = ""
         self._rarity = 0
         self.show_plus = True
+        self.instant_tip = False  # show the tooltip at once on hover (not after Qt's usual delay)
         self._urls = []
 
     def set_content(self, urls, rarity=0, badge=""):
@@ -482,6 +618,21 @@ class ImageTile(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
             self.clicked.emit()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if self.instant_tip and self.toolTip():
+            from PySide6.QtGui import QCursor
+            from PySide6.QtWidgets import QToolTip
+
+            QToolTip.showText(QCursor.pos(), self.toolTip(), self)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        if self.instant_tip:
+            from PySide6.QtWidgets import QToolTip
+
+            QToolTip.hideText()
 
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -513,22 +664,25 @@ class ImageTile(QWidget):
         else:
             p.fillRect(rect, QColor(0, 0, 0, 70))
             if self.show_plus:
-                p.setPen(QPen(QColor(ACCENT), 1.5, Qt.DashLine))
+                p.setPen(QPen(QColor(theme.accent_hex()), 1.5, Qt.DashLine))
                 p.drawRect(rect.adjusted(2, 2, -2, -2))
-                p.setPen(QColor(ACCENT))
+                p.setPen(QColor(theme.color(ACCENT)))
                 f = QFont("Segoe UI", int(self.height() / 4))
                 p.setFont(f)
                 p.drawText(rect, Qt.AlignCenter, "+")
 
         p.setClipping(False)
-        p.setPen(QPen(QColor(PANEL_BORDER), 1))
+        p.setPen(QPen(QColor(theme.color(PANEL_BORDER)), 1))
         p.setBrush(Qt.NoBrush)
         p.drawRect(rect)
         if self._badge:
-            f = QFont("Segoe UI", 9, QFont.Bold)
+            # sized to the tile, so on a small one it covers only a corner of the picture
+            small = self.height() < 80
+            f = QFont("Segoe UI", 7 if small else 9, QFont.Bold)
             p.setFont(f)
-            w = p.fontMetrics().horizontalAdvance(self._badge) + 10
-            badge = QRectF(rect.right() - w - 3, rect.bottom() - 20, w, 17)
+            w = p.fontMetrics().horizontalAdvance(self._badge) + (6 if small else 10)
+            h = 13 if small else 17
+            badge = QRectF(rect.right() - w - 2, rect.bottom() - h - 2, w, h)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(10, 11, 14, 184))
             p.drawRect(badge)
@@ -629,7 +783,7 @@ def card_pixmap(portrait, element_pm, rarity, size=96, logged=False, border=None
         d = full * 0.24
         badge = QRectF(full - d, full - d, d, d)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(ACCENT))
+        p.setBrush(QColor(theme.color(ACCENT)))
         p.drawRect(badge)
         p.setPen(QPen(QColor("#ffffff"), 2.5 * scale))
         p.drawLine(QPointF(badge.left() + d * 0.27, badge.top() + d * 0.52), QPointF(badge.left() + d * 0.44, badge.top() + d * 0.7))

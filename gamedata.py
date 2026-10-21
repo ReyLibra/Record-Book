@@ -14,20 +14,35 @@ import threading
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-import ambr
-from aiohttp_client_cache.backends.sqlite import SQLiteBackend
-from aiohttp_client_cache.session import CachedSession
-from loguru import logger
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage, QPixmap
 
-logger.disable("ambr")  # ambr logs every request at DEBUG level
-
 from app_info import APP_DIR
+
+# ambr-py and aiohttp take about a second to import. Only downloads need them, so they're loaded on a
+# background thread while the window opens instead of delaying it (_api() waits for them if needed).
+_api_modules = {}
+_api_lock = threading.Lock()
+
+
+def _api():
+    with _api_lock:
+        if not _api_modules:
+            import ambr
+            from aiohttp_client_cache.backends.sqlite import SQLiteBackend
+            from aiohttp_client_cache.session import CachedSession
+            from loguru import logger
+
+            logger.disable("ambr")  # ambr logs every request at DEBUG level
+            _api_modules.update(ambr=ambr, SQLiteBackend=SQLiteBackend, CachedSession=CachedSession)
+    return _api_modules
+
+
+threading.Thread(target=_api, daemon=True, name="preload ambr").start()
 
 HERE = APP_DIR
 CACHE_DIR = HERE / ".cache"
@@ -99,6 +114,7 @@ LINK_COLOR = "#e6c88f"
 # fetch_character_glossary(); MECHANICS are short Record Book summaries of recurring game systems
 # the game text mentions without explaining.
 GLOSSARY = {}
+CHAR_GLOSSARY = {}  # char_id -> [(term, description)] from that character's game glossary
 MECHANICS = {
     "Nightsoul's Blessing": "Natlan's special state. While in it, the character's attacks are Nightsoul-aligned and "
     "most of their abilities drain Nightsoul points; the state ends when the points run out or its duration ends.",
@@ -188,7 +204,7 @@ def glossary_html(href):
     return (
         "<table width='340'><tr><td>"
         f"<b style='color:{LINK_COLOR}'>{html.escape(name)}</b><br>"
-        f"{rich_html(body) if source == 'Game glossary' else html.escape(body)}"
+        f"{rich_html(body) if source == 'Game glossary' else html.escape(body).replace(chr(10), '<br>')}"
         f"<br><span style='color:#8a91a0; font-size:8pt'>{source}</span>"
         "</td></tr></table>"
     )
@@ -210,29 +226,50 @@ def _fill_params(text, params):
 
 @lru_cache(maxsize=None)
 def fetch_character_markup(char_id):
-    """Talent and constellation descriptions with the game's markup intact, keyed by cleaned name.
+    """Talent and constellation descriptions with the game's markup intact, keyed by cleaned name,
+    as (texts, buffed). `buffed` holds the updated text of kits the game has reworked
+    ("descriptionBuff", what Project Amber's Buff toggle shows), only where it differs.
 
     ambr-py strips the color and link tags from its models, so this reads the same (cached) API
     response directly. It also loads the character's glossary of linked terms (newer characters
     have one) into GLOSSARY.
     """
+    import unreleased
+
+    if unreleased.is_character(char_id):
+        texts, buffed, glossary = unreleased.character_markup(char_id)
+        CHAR_GLOSSARY[char_id] = []
+        for key, name, description in glossary:
+            GLOSSARY[key] = (clean(name or key), description, "Game glossary")
+            CHAR_GLOSSARY[char_id].append((clean(name or key), description))
+        return texts, buffed
     data = _run(lambda api: api._request(f"avatar/{char_id}", use_cache=True)).get("data") or {}
     effects = (data.get("dictionary") or {}).get("effectsInfo") or {}
+    CHAR_GLOSSARY[char_id] = []
     for key, e in effects.items():
         description = _fill_params(e.get("description") or "", e.get("params"))
         GLOSSARY[key] = (clean(e.get("name") or key), description, "Game glossary")
-    texts = {}
+        CHAR_GLOSSARY[char_id].append((clean(e.get("name") or key), description))
+    texts, buffed = {}, {}
     for section in ("talent", "constellation"):
         entries = data.get(section) or {}
         for entry in entries.values() if isinstance(entries, dict) else entries:
             if entry.get("name") and entry.get("description"):
-                texts[clean(entry["name"])] = entry["description"]
-    return texts
+                name = clean(entry["name"])
+                texts[name] = entry["description"]
+                buff = entry.get("descriptionBuff")
+                if buff and clean(buff) != clean(entry["description"]):
+                    buffed[name] = buff
+    return texts, buffed
 
 
 @lru_cache(maxsize=None)
 def fetch_weapon_markup(weapon_id):
     """A weapon's refinement descriptions (R1 first) with the game's color markup intact."""
+    import unreleased
+
+    if unreleased.is_weapon(weapon_id):
+        return unreleased.weapon_markup(weapon_id)
     data = _run(lambda api: api._request(f"weapon/{int(weapon_id)}", use_cache=True)).get("data") or {}
     affix = next(iter((data.get("affix") or {}).values()), None) or {}
     upgrades = affix.get("upgrade") or {}
@@ -277,6 +314,10 @@ def format_stat(prop, value):
 
 def character_stats(detail, curve, level):
     """Base HP/ATK/DEF and the ascension stat at a level (1–90), as {prop: value}."""
+    if getattr(detail, "level_stats", None):
+        import unreleased
+
+        return unreleased.stats_at(detail.level_stats, level)
     promotes = sorted(detail.upgrade.promotes, key=lambda p: p.unlock_max_level)
     promote = next((p for p in promotes if p.unlock_max_level >= level), promotes[-1])
     bonus = {s.id: s.value for s in (promote.add_stats or [])}
@@ -357,12 +398,12 @@ def element_icon_url(element):
     return f"{ASSETS}UI_Buff_Element_{_ELEMENT_ICON_NAMES[element]}.png"
 
 
+_WEAPON_TYPE_NAMES = {"WEAPON_SWORD_ONE_HAND": "Sword", "WEAPON_CLAYMORE": "Claymore", "WEAPON_POLE": "Polearm",
+                      "WEAPON_BOW": "Bow", "WEAPON_CATALYST": "Catalyst"}
+
+
 def weapon_type_name(raw):
-    try:
-        name = pretty(ambr.WeaponType(raw).name)
-    except ValueError:
-        return raw
-    return {"Pole": "Polearm"}.get(name, name)
+    return _WEAPON_TYPE_NAMES.get(raw, raw)
 
 
 # Weapon types in the game's own order, for filter buttons.
@@ -415,14 +456,17 @@ class GameIndex:
     characters: dict  # id -> CharInfo
     weapons: dict  # id -> WeaponInfo
     artifacts: dict  # id -> ArtifactInfo
+    unreleased: set = field(default_factory=set)  # ids of the unreleased characters and weapons (unreleased.py)
 
 
 # ---------- API ----------
 def _run(fn):
+    api_modules = _api()
+
     async def main():
         CACHE_DIR.mkdir(exist_ok=True)
-        cache = SQLiteBackend(str(CACHE_DIR / "ambr-cache.db"), expire_after=3600)
-        async with CachedSession(cache=cache) as session, ambr.AmbrAPI(session=session) as api:
+        cache = api_modules["SQLiteBackend"](str(CACHE_DIR / "ambr-cache.db"), expire_after=3600)
+        async with api_modules["CachedSession"](cache=cache) as session, api_modules["ambr"].AmbrAPI(session=session) as api:
             return await fn(api)
 
     return asyncio.run(main())
@@ -439,6 +483,28 @@ def _release_order(changelog, kind):
             except ValueError:
                 pass
     return order
+
+
+TWINS = ("Aether", "Lumine")
+
+
+def for_traveler(index, twin, keep=(), show_unreleased=False):
+    """The index with only one Traveler twin's entries (the other's are left out of every list), and
+    unreleased characters and weapons only when show_unreleased, except ids in keep (e.g. a logged
+    Traveler of the other twin, so its record still shows)."""
+    hidden = tuple(f"{t} (" for t in TWINS if t != twin)
+
+    def kept(cid):
+        return cid in keep or str(cid) in keep
+
+    return GameIndex(
+        characters={cid: c for cid, c in index.characters.items()
+                    if (not c.name.startswith(hidden) and (show_unreleased or cid not in index.unreleased)) or kept(cid)},
+        weapons={wid: w for wid, w in index.weapons.items()
+                 if show_unreleased or wid not in index.unreleased or kept(wid)},
+        artifacts=index.artifacts,
+        unreleased=index.unreleased,
+    )
 
 
 def fetch_index():
@@ -466,16 +532,35 @@ def fetch_index():
             twin = "Lumine" if str(c.id).startswith("10000007") else "Aether"
             name = f"{twin} ({pretty(element)})"
         characters[c.id] = CharInfo(c.id, name, element, c.weapon_type.value, c.rarity, c.icon, c.region or "", c.release)
+    weapon_infos = {
+        w.id: WeaponInfo(w.id, w.name, w.type, w.rarity, w.icon, (weapon_order.get(w.id, 0), w.id % 100))
+        for w in weapons
+        if w.id < 100000
+    }
+    # unreleased characters and weapons (shown when the nav's Unreleased toggle is on); the app works
+    # without them if that site is down
+    unreleased_ids = set()
+    try:
+        import unreleased
+
+        # only what Project Amber actually serves as released (not its beta entries): the moment it does,
+        # that copy is used instead and the Lunaris one is dropped, same id, so logged records carry over
+        new_chars, new_weapons = unreleased.fetch_lists(
+            {c.name for c in chars if not c.beta and c.element.name in ELEMENTS},
+            {w.name for w in weapon_infos.values()},
+            set(characters) | set(weapon_infos),
+        )
+        characters.update(new_chars)
+        weapon_infos.update(new_weapons)
+        unreleased_ids = set(new_chars) | set(new_weapons)
+    except Exception:
+        pass
     return GameIndex(
         characters=characters,
         # Release order: the version that added it, then (for pre-3.0 items, and within a version) the
         # id's running number, which the game assigns in release order within a weapon type and rarity.
         # Six-digit ids are weapon skins (e.g. "Serpent Devourer", "Exaiphanes Blade" 390002), not weapons.
-        weapons={
-            w.id: WeaponInfo(w.id, w.name, w.type, w.rarity, w.icon, (weapon_order.get(w.id, 0), w.id % 100))
-            for w in weapons
-            if w.id < 100000
-        },
+        weapons=weapon_infos,
         artifacts={
             a.id: ArtifactInfo(
                 a.id, a.name, max(a.rarity_list), a.icon, [clean(x.effect) for x in a.affix_list],
@@ -483,11 +568,16 @@ def fetch_index():
             )
             for a in artifacts
         },
+        unreleased=unreleased_ids,
     )
 
 
 @lru_cache(maxsize=None)
 def fetch_character_detail(char_id):
+    import unreleased
+
+    if unreleased.is_character(char_id):
+        return unreleased.character_detail(char_id)
     return _run(lambda api: api.fetch_character_detail(char_id))
 
 
@@ -498,6 +588,10 @@ def fetch_avatar_curve():
 
 @lru_cache(maxsize=None)
 def fetch_weapon_detail(weapon_id):
+    import unreleased
+
+    if unreleased.is_weapon(weapon_id):
+        return unreleased.weapon_detail(weapon_id)
     return _run(lambda api: api.fetch_weapon_detail(int(weapon_id)))
 
 
@@ -512,11 +606,17 @@ def fetch_weapon_curve():
 
 
 def weapon_max_level(detail):
+    if getattr(detail, "level_stats", None):
+        return max(detail.level_stats)
     return max(p.unlock_max_level for p in detail.upgrade.promotes)
 
 
 def weapon_stats(detail, curve, level):
     """Base ATK and the secondary stat at a level, as {prop: value} (same math as character_stats)."""
+    if getattr(detail, "level_stats", None):
+        import unreleased
+
+        return unreleased.stats_at(detail.level_stats, level)
     promotes = sorted(detail.upgrade.promotes, key=lambda p: p.unlock_max_level)
     promote = next((p for p in promotes if p.unlock_max_level >= level), promotes[-1])
     bonus = {s.id: s.value for s in (promote.add_stats or [])}
@@ -540,6 +640,9 @@ def refresh_index():
         fetch_weapon_curve, fetch_character_markup, fetch_weapon_markup,
     ):
         fn.cache_clear()
+    import unreleased
+
+    unreleased.clear_cache()
     cache = CACHE_DIR / "ambr-cache.db"
     try:
         cache.unlink(missing_ok=True)
@@ -578,7 +681,10 @@ def fetch_image(url):
     path = IMG_DIR / (hashlib.sha1(url.encode()).hexdigest()[:20] + ".png")
     if path.exists():
         return path.read_bytes()
-    req = urllib.request.Request(url, headers={"User-Agent": "RecordBook/1.0"})
+    headers = {"User-Agent": "RecordBook/1.0"}
+    if "lunaris.moe" in url:
+        headers["Referer"] = "https://gi.yatta.moe/"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read()
@@ -633,6 +739,39 @@ _waiting = {}  # url -> callbacks waiting for that url
 _bulk_only = set()  # urls whose only pending fetch is in the slow bulk queue
 
 
+_tracked = None  # while a page is being built: the images it asked for that weren't cached yet
+
+
+def track_images():
+    """Start recording the uncached images requested from now on; returns the set they go into.
+    Call stop_tracking() when done, then when_loaded() to wait for them."""
+    global _tracked
+    _tracked = set()
+    return _tracked
+
+
+def stop_tracking():
+    global _tracked
+    _tracked = None
+
+
+def when_loaded(urls, callback):
+    """Call callback() once every url has finished loading (successfully or not)."""
+    left = [url for url in urls if url not in _pixmaps]
+    if not left:
+        callback()
+        return
+    remaining = [len(left)]
+
+    def one_done(_pm):
+        remaining[0] -= 1
+        if remaining[0] == 0:
+            callback()
+
+    for url in left:
+        _waiting.setdefault(url, []).append(one_done)
+
+
 def load_pixmap(url, callback, fallback=None, bulk=False):
     """Call callback(QPixmap or None) once the image is available (immediately if cached).
 
@@ -641,6 +780,8 @@ def load_pixmap(url, callback, fallback=None, bulk=False):
     if url in _pixmaps:
         callback(_pixmaps[url])
         return
+    if _tracked is not None and url:
+        _tracked.add(url)
     if url in _waiting:
         _waiting[url].append(callback)
         if not bulk and url in _bulk_only:  # someone is looking at it now: jump the queue

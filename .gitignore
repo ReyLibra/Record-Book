@@ -1,5 +1,5 @@
-# Your data (personal logs and settings)
-record_book.db
+﻿# Your data (personal logs and settings) and backups of it
+*.db
 journal.db
 
 # Downloaded game data and images (re-downloaded on launch)
@@ -8,10 +8,11 @@ journal.db
 # Runtime crash log
 crash.log
 
-# Build output (python build.py)
+# Build output (python build.py): publish the exe as a GitHub release instead
 build/
 dist/
 *.spec
+*.exe
 
 # Python
 __pycache__/

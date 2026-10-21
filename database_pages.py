@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 import gamedata
+import weapon_sources
 from gamedata import html_text, rich_html
 from search import matches
 from widgets import (
@@ -36,8 +38,10 @@ GRID_CELL = QSize(124, 146)  # the Characters page's card + name cell
 
 TITLES = {"weapon": "Weapons", "artifact": "Artifacts"}
 SEARCH_WIDTH = 300
+NEW = "new"  # source filter: weapons the wiki doesn't list yet
 
 # Artifact piece slots, in the game's order
+PIECE_ICON = 56  # the artifact set's pieces, in a row
 PIECE_SLOTS = {
     "EQUIP_BRACER": "Flower of Life",
     "EQUIP_NECKLACE": "Plume of Death",
@@ -109,8 +113,33 @@ class _SliderRow(QWidget):
         self._on_change(value)
 
 
+DETAIL_MIN, DETAIL_MAX = 340, 480  # the detail panel's width range
+
+
 class BrowsePage(QWidget):
     message = Signal(str)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # the detail panel takes ~40% of the page (within its range), the list the rest
+        self.detail.setFixedWidth(max(DETAIL_MIN, min(DETAIL_MAX, round(self.width() * 0.4))))
+        if self.type_group is None:
+            return
+        margins = self.layout().contentsMargins()
+        room = self.width() - self.detail.width() - self.layout().spacing() - margins.left() - margins.right()
+        one_row = (self.all_button.sizeHint().width() + self.rarity_group.sizeHint().width()
+                   + self.type_group.sizeHint().width() + 30) <= room
+        in_first = self.controls.indexOf(self.type_group) >= 0
+        if one_row and not in_first:
+            self.type_row.removeWidget(self.type_group)
+            self.controls.insertWidget(self.controls.count() - 1, self.type_group)
+        elif not one_row and in_first:
+            self.controls.removeWidget(self.type_group)
+            self.type_row.addWidget(self.type_group)
+            self.type_row.addStretch()
+        if one_row:  # (drop the second row's leftover stretch)
+            while self.type_row.count():
+                self.type_row.takeAt(0)
 
     def __init__(self, kind, store):
         super().__init__()
@@ -122,7 +151,7 @@ class BrowsePage(QWidget):
         self._loaded = None  # what the detail panel is showing, for re-rendering on slider moves
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setContentsMargins(28, 22, 28, 20)  # the same as the Characters and Buffs pages
         layout.setSpacing(20)
 
         # ----- left: header, Prydwen-style filter buttons, grid -----
@@ -131,11 +160,32 @@ class BrowsePage(QWidget):
         title, self.count_label = section_header(f"All {TITLES[kind]}")
         left.addWidget(title)
 
-        # search on its own row, then [All] + rarities, then weapon types, so it fits the narrowest window
+        # row 1: search, and (weapons) the source dropdown beside it; row 2: [All] + rarities, then the weapon types
+        top = QHBoxLayout()
+        top.setSpacing(8)
         self.search = QLineEdit(placeholderText=f"Search {TITLES[kind].lower()}…")
         self.search.setMaximumWidth(SEARCH_WIDTH * 2)
         self.search.textChanged.connect(self.apply_filter)
-        left.addWidget(self.search)
+        top.addWidget(self.search, 1)
+        # where a weapon comes from (event, wish, crafting…), from the wiki (weapon_sources.py)
+        # (a dropdown: ten sources don't fit as a row of buttons)
+        self.source_box = None
+        if kind == "weapon":
+            weapon_sources.load_cache()
+            top.addSpacing(4)
+            kicker = QLabel("SOURCE")
+            kicker.setObjectName("FieldLabel")
+            top.addWidget(kicker)
+            self.source_box = QComboBox()
+            self.source_box.setMinimumWidth(150)
+            self.source_box.setMaximumWidth(260)
+            self.source_box.setToolTip("Where the weapon comes from (from the Genshin Impact wiki)")
+            self.source_box.currentIndexChanged.connect(lambda _: self.apply_filter())
+            top.addWidget(self.source_box, 1)
+        # the spare width goes after the row, so the label stays beside its dropdown in a wide window
+        top.addStretch()
+        left.addLayout(top)
+
         controls = QHBoxLayout()
         controls.setSpacing(4)
         self.all_button = filter_button("All", tooltip="Clear all filters")
@@ -147,20 +197,23 @@ class BrowsePage(QWidget):
         self.rarity_group = FilterGroup([(r, f"{r}★", None, tip.format(r)) for r in rarities])
         self.rarity_group.changed.connect(lambda _: self.apply_filter())
         controls.addWidget(self.rarity_group)
-        controls.addStretch()
-        left.addLayout(controls)
-
         self.type_group = None
         if kind == "weapon":
-            types = QHBoxLayout()
-            types.setSpacing(4)
+            controls.addSpacing(8)
             self.type_group = FilterGroup(
                 [(t, "", gamedata.weapon_type_icon_url(t), gamedata.weapon_type_name(t)) for t in gamedata.WEAPON_TYPES]
             )
             self.type_group.changed.connect(lambda _: self.apply_filter())
-            types.addWidget(self.type_group)
-            types.addStretch()
-            left.addLayout(types)
+            controls.addWidget(self.type_group)
+        controls.addStretch()
+        left.addLayout(controls)
+        # (weapons) the weapon types move to their own row when the list side is too narrow for one row
+        self.controls = controls
+        self.type_row = QHBoxLayout()
+        self.type_row.setSpacing(4)
+        left.addLayout(self.type_row)
+        if self.source_box:
+            self._fill_sources()
 
         # same cards as the Characters grid
         self.grid = EvenGrid(GRID_CELL + QSize(8, 8))
@@ -181,7 +234,9 @@ class BrowsePage(QWidget):
         # ----- right: detail panel -----
         self.detail = QFrame()
         self.detail.setObjectName("Card")
-        self.detail.setFixedWidth(480)
+        # between DETAIL_MIN and DETAIL_MAX wide, so the page always fits the window (see resizeEvent)
+        self.detail.setMinimumWidth(DETAIL_MIN)
+        self.detail.setMaximumWidth(DETAIL_MAX)
         d = QVBoxLayout(self.detail)
         d.setContentsMargins(20, 20, 20, 20)
         d.setSpacing(12)
@@ -246,7 +301,15 @@ class BrowsePage(QWidget):
                 lambda pm, item=item, r=entry.rarity: pm and item.setIcon(QIcon(card_pixmap(pm, None, r))),
                 bulk=True,
             )
+        self._fill_sources()  # the counts follow the listed weapons (Unreleased on / off)
         self.apply_filter()
+        # never an empty detail panel: keep the item being shown, else open the first one in the grid
+        current = getattr(self, "current_id", None)
+        if current not in self._entries():
+            current = next((self.grid.item(i).data(Qt.UserRole) for i in range(self.grid.count())
+                            if not self.grid.item(i).isHidden()), None)
+        if current is not None:
+            self.show_item(current, visit=False)
 
     def _entries(self):
         return self.index.weapons if self.kind == "weapon" else self.index.artifacts
@@ -255,7 +318,43 @@ class BrowsePage(QWidget):
         self.rarity_group.set_value(None)
         if self.type_group:
             self.type_group.set_value(None)
+        if self.source_box:
+            self.source_box.blockSignals(True)
+            self.source_box.setCurrentIndex(0)
+            self.source_box.blockSignals(False)
         self.apply_filter()
+
+    def _fill_sources(self):
+        """The source dropdown, with how many of the listed weapons come from each."""
+        if not self.source_box:
+            return
+        weapons = list(self.index.weapons.values()) if self.index else []
+        counts = {}
+        for w in weapons:
+            key = weapon_sources.source_of(w) or NEW
+            counts[key] = counts.get(key, 0) + 1
+        current = self.source_box.currentData()
+        self.source_box.blockSignals(True)
+        self.source_box.clear()
+        self.source_box.addItem("All sources", None)
+        for key, label, tip, _cat in weapon_sources.SOURCES:
+            self.source_box.addItem(f"{label}  ({counts.get(key, 0)})", key)
+            self.source_box.setItemData(self.source_box.count() - 1, tip, Qt.ToolTipRole)
+        if counts.get(NEW):  # new / upcoming / unreleased weapons the wiki hasn't filed yet
+            self.source_box.addItem(f"{weapon_sources.UNKNOWN}  ({counts[NEW]})", NEW)
+        found = self.source_box.findData(current)
+        self.source_box.setCurrentIndex(found if found >= 0 else 0)
+        self.source_box.blockSignals(False)
+
+    def sources_updated(self):
+        """The wiki's weapon sources were read again: refilter, and refresh the source in the detail panel."""
+        if self.kind != "weapon" or not self.index:
+            return
+        self._fill_sources()
+        self.apply_filter()
+        if self._loaded:
+            info, w, _markup = self._loaded
+            self.sub_label.setText(self._weapon_subtitle(info, w))
 
     def apply_filter(self):
         if not self.index:
@@ -263,7 +362,8 @@ class BrowsePage(QWidget):
         text = self.search.text()
         rarity = self.rarity_group.value
         wtype = self.type_group.value if self.type_group else None
-        self.all_button.setChecked(rarity is None and wtype is None)
+        source = self.source_box.currentData() if self.source_box else None
+        self.all_button.setChecked(rarity is None and wtype is None and source is None)
         entries = self._entries()
         shown = 0
         for i in range(self.grid.count()):
@@ -273,6 +373,7 @@ class BrowsePage(QWidget):
                 not matches(text, entry.name)
                 or bool(rarity and entry.rarity != rarity)
                 or bool(wtype and entry.type != wtype)
+                or bool(source and (weapon_sources.source_of(entry) or NEW) != source)
             )
             item.setHidden(hidden)
             shown += not hidden
@@ -331,8 +432,12 @@ class BrowsePage(QWidget):
         clear_layout(self.extras)
 
     # ----- weapons: level slider for the stats, refinement slider for the passive -----
+    @staticmethod
+    def _weapon_subtitle(info, w):
+        return f"{_stars(w.rarity)}  {gamedata.weapon_type_name(info.type)}  ·  {weapon_sources.label_of(info)}"
+
     def _show_weapon(self, info, w, markup, curve):
-        self.sub_label.setText(f"{_stars(w.rarity)}  {gamedata.weapon_type_name(info.type)}")
+        self.sub_label.setText(self._weapon_subtitle(info, w))
         self._loaded = (info, w, markup)
 
         if curve:
@@ -403,20 +508,19 @@ class BrowsePage(QWidget):
             parts.append(f"<h3>{n}-piece bonus</h3><p>{rich_html(bonus)}</p>")
         self.text.setHtml(DETAIL_CSS + "".join(parts))
 
+        # the pieces in one row (flower, plume, sands, goblet, circlet); hover one for its name and slot
         clear_layout(self.pieces_layout)
-        self.pieces_layout.addWidget(_kicker("PIECES"), 0, 0, 1, 2)
         order = list(PIECE_SLOTS)
         pieces = sorted(a.artifacts, key=lambda p: order.index(p.pos) if p.pos in order else len(order))
-        for row, piece in enumerate(pieces, 1):
-            icon = RemoteIcon(40)
+        self.pieces_layout.addWidget(_kicker("PIECES"), 0, 0, 1, max(1, len(pieces)))
+        for col, piece in enumerate(pieces):
+            icon = RemoteIcon(PIECE_ICON)
             icon.set_url(piece.icon)
             icon.setStyleSheet("background: rgba(0,0,0,0.28); border: 1px solid #33343a;")
-            name = QLabel(
-                f"<b>{html_text(piece.name)}</b><br>"
-                f"<span style='color: rgba(255,255,255,0.55)'>{PIECE_SLOTS.get(piece.pos, piece.pos)}</span>"
-            )
-            name.setToolTip(gamedata.clean(piece.description or ""))
-            self.pieces_layout.addWidget(icon, row, 0)
-            self.pieces_layout.addWidget(name, row, 1)
-        self.pieces_layout.setColumnStretch(1, 1)
+            icon.setToolTip(f"<b>{html_text(piece.name)}</b><br>"
+                            f"<span style='color: rgba(255,255,255,0.55)'>{PIECE_SLOTS.get(piece.pos, piece.pos)}</span>")
+            self.pieces_layout.addWidget(icon, 1, col)
+        for col in range(self.pieces_layout.columnCount()):
+            self.pieces_layout.setColumnStretch(col, 0)
+        self.pieces_layout.setColumnStretch(len(pieces), 1)  # keep the row on the left
         self.pieces.show()

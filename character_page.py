@@ -4,9 +4,11 @@ Centre: a hero banner (art, badges, info grid) and tabs split into titled sectio
 Right: a searchable, element-filterable list of every character to scroll between.
 """
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QCursor, QIcon, QLinearGradient, QPainter, QRadialGradient
 from PySide6.QtWidgets import (
+    QApplication,
+    QAbstractButton,
     QAbstractItemView,
     QButtonGroup,
     QComboBox,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 import gamedata
+import theme
 from search import matches
 from gamedata import pretty, rich_html
 from widgets import ColumnGrid, EvenGrid, FilterGroup, ImageTile, clear_layout, filter_button, glossary_tooltips, section_header, RemoteIcon, card_pixmap, shape_icon
@@ -108,6 +111,7 @@ def page_css(accent):
 #MiniLabel {{ background: {_rgba(gold, 0.12)}; border: 1px solid {_rgba(gold, 0.46)}; color: rgb{gold};
               font-size: 12pt; font-weight: 900; padding: 3px 9px; border-radius: 0; }}
 #StatTile {{ background: {_rgba(INSET_BG, 0.62)}; border: 1px solid rgba(255,255,255,0.11); border-radius: 0; }}
+#StatTile[ascension="true"] {{ border: 1px solid rgb{a}; background: rgba({a[0]},{a[1]},{a[2]},0.10); }}
 #StatKey {{ color: #8c909b; font-size: 7.5pt; font-weight: 900; }}
 #StatValue {{ font-size: 15pt; font-weight: 700; color: #ffffff; }}
 #MultiplierBox {{ background: rgba(12,13,16,0.52); border: 1px solid {BORDER}; border-radius: 0; }}
@@ -207,7 +211,7 @@ class CardHeader(QFrame):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(*HEADER_BG, 184))
+        p.fillRect(self.rect(), theme.qcolor(*HEADER_BG, 184))
         glow = QRadialGradient(QPointF(48, self.height() / 2), 74)
         glow.setColorAt(0, QColor(*self.accent, 41))
         glow.setColorAt(1, QColor(*self.accent, 0))
@@ -250,22 +254,43 @@ def _clear(layout):
     clear_layout(layout)
 
 
+def _make_selectable(root):
+    """Let the page's text be highlighted and copied (Ctrl+C or right-click > Copy).
+    Glossary links keep working; labels on buttons are left alone so clicking them still clicks."""
+    for label in root.findChildren(QLabel):
+        flags = label.textInteractionFlags()
+        if flags & Qt.TextSelectableByMouse or not label.text():
+            continue
+        parent = label.parentWidget()
+        while parent is not None and parent is not root and not isinstance(parent, QAbstractButton):
+            parent = parent.parentWidget()
+        if isinstance(parent, QAbstractButton):
+            continue
+        label.setTextInteractionFlags(flags | Qt.TextSelectableByMouse)
+
+
 # ---------- hero banner ----------
 class Hero(QFrame):
     """Art on the right fading into the name, badges and info grid on the left."""
 
-    def __init__(self):
+    def __init__(self, compact=False, kicker="GENSHIN IMPACT CHARACTER GUIDE"):
         super().__init__()
         self.setObjectName("Hero")
-        self.setMinimumHeight(430)
+        # compact: the character page and the log, whose banner holds fewer facts (the rest are in the
+        # Profile tab) - the same height for every character, whatever their art or text
+        if compact:
+            self.setFixedHeight(HERO_COMPACT_HEIGHT)
+        else:
+            self.setMinimumHeight(430)
+        self.corner = None
         self._art = None
         self._art_url = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(46, 40, 46, 36)
+        layout.setContentsMargins(*((40, 28, 40, 24) if compact else (46, 40, 46, 36)))
         left = QVBoxLayout()
         left.setSpacing(10)
-        left.addWidget(_label("GENSHIN IMPACT CHARACTER GUIDE", "Kicker"))
+        left.addWidget(_label(kicker, "Kicker"))
         self.name = _label("", "HeroName")
         self.title = _label("", "HeroTitle")
         left.addWidget(self.name)
@@ -285,6 +310,23 @@ class Hero(QFrame):
         holder.setMaximumWidth(470)
         layout.addWidget(holder)
         layout.addStretch()
+
+    def set_corner(self, widget):
+        """A small button in the bottom-right corner (the log page's favourite star)."""
+        self.corner = widget
+        widget.setParent(self)
+        self._place_corner()
+
+    def _place_corner(self):
+        if self.corner is not None:
+            size = self.corner.sizeHint()
+            self.corner.setGeometry(self.width() - size.width() - 14, self.height() - size.height() - 12,
+                                    size.width(), size.height())
+            self.corner.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_corner()
 
     def set_art(self, url, fallback):
         if url == self._art_url:
@@ -312,17 +354,28 @@ class Hero(QFrame):
         y = rect.center().y() - scaled.height() / 2
         p.drawPixmap(int(x), int(y), scaled)
         fade = QLinearGradient(rect.topLeft(), rect.topRight())
-        fade.setColorAt(0.0, QColor(17, 19, 24, 255))
-        fade.setColorAt(0.38, QColor(17, 19, 24, 235))
-        fade.setColorAt(0.62, QColor(17, 19, 24, 40))
-        fade.setColorAt(1.0, QColor(17, 19, 24, 0))
+        fade.setColorAt(0.0, theme.qcolor(17, 19, 24, 255))
+        fade.setColorAt(0.38, theme.qcolor(17, 19, 24, 235))
+        fade.setColorAt(0.62, theme.qcolor(17, 19, 24, 40))
+        fade.setColorAt(1.0, theme.qcolor(17, 19, 24, 0))
         p.fillRect(rect, QBrush(fade))
         p.end()
 
 
-def fill_hero(hero, info, detail, color):
+def profile_facts(detail):
+    """Title, constellation, birthday and affiliation (the character page shows these under About)."""
+    return [
+        ("Title", gamedata.clean(detail.info.title)),
+        ("Constellation", gamedata.clean(detail.info.constellation)),
+        ("Birthday", f"{detail.birthday.month:02d}-{detail.birthday.day:02d}"),
+        ("Affiliation", gamedata.clean(detail.info.native)),
+    ]
+
+
+def fill_hero(hero, info, detail, color, with_profile=True):
     """Fill the character banner: art, name, title, rarity/element/weapon badges and the info grid.
-    Shared by the character page and the character log; each adds its own buttons."""
+    Shared by the character page and the character log; each adds its own buttons.
+    with_profile=False leaves the profile facts out (the character page has them in its Profile tab)."""
     hero.set_art(info.splash, info.icon)
     hero.name.setText(info.name)
     hero.title.setText(gamedata.clean(detail.info.title))
@@ -345,13 +398,10 @@ def fill_hero(hero, info, detail, color):
     hero.badges.addStretch()
 
     _clear(hero.grid)
-    facts = [
-        ("Title", gamedata.clean(detail.info.title)),
-        ("Constellation", gamedata.clean(detail.info.constellation)),
-        ("Birthday", f"{detail.birthday.month:02d}-{detail.birthday.day:02d}"),
-        ("Affiliation", gamedata.clean(detail.info.native)),
+    facts = (profile_facts(detail) if with_profile else []) + [
         ("Region", pretty(detail.region) if detail.region else "—"),
-        ("Release", detail.release.strftime("%Y-%m-%d") if detail.release else "—"),
+        ("Release", "Unreleased" if getattr(detail, "unreleased", False)
+         else detail.release.strftime("%Y-%m-%d") if detail.release else "—"),
     ]
     for n, (key, value) in enumerate(facts):
         hero.grid.addWidget(InfoTile(key, value or "—"), n // 2, n % 2)
@@ -452,6 +502,15 @@ class TalentCard(KitCard):
         self.body.addWidget(box)
 
 
+HERO_COMPACT_HEIGHT = 330  # the character page's and the log's banner
+LOADING_CARD = 120  # the portrait in the middle while a character loads
+LOADING_MIN_MS = 300  # the loading view stays up at least this long when switching characters
+IMAGE_WAIT_MS = 8000  # longest the loading view waits on the page's images before showing it anyway
+
+MAX_LEVEL = 100  # the stat curves go to 100
+START_LEVEL = 90
+
+
 class LevelStats(Panel):
     """Prydwen-style level slider with base stats and the ascension stat."""
 
@@ -474,9 +533,10 @@ class LevelStats(Panel):
         head.addWidget(self.level_badge, 0, Qt.AlignBottom)
         left.addLayout(head)
 
+        # up to level 100 (the game's levels past 90), starting at the usual 90
         self.slider = QSlider(Qt.Horizontal)
-        self.slider.setRange(1, 90)
-        self.slider.setValue(90)
+        self.slider.setRange(1, MAX_LEVEL)
+        self.slider.setValue(START_LEVEL)
         self.slider.setTickPosition(QSlider.TicksBelow)
         self.slider.setTickInterval(10)
         self.slider.setCursor(Qt.PointingHandCursor)
@@ -490,10 +550,12 @@ class LevelStats(Panel):
         row.addLayout(grid, 1)
         self.body.addLayout(row)
         self.values = {}
-        props = list(gamedata.character_stats(detail, curve, 90))
+        props = list(gamedata.character_stats(detail, curve, START_LEVEL))
         for n, prop in enumerate(props):
             tile = QFrame()
             tile.setObjectName("StatTile")
+            if gamedata.stat_name(prop).upper() not in ("BASE HP", "BASE ATK", "BASE DEF"):
+                tile.setProperty("ascension", "true")
             v = QVBoxLayout(tile)
             v.setContentsMargins(10, 8, 10, 8)
             v.setSpacing(2)
@@ -502,10 +564,10 @@ class LevelStats(Panel):
             v.addWidget(value)
             self.values[prop] = value
             grid.addWidget(tile, n // 2, n % 2)
-        self.refresh(90)
+        self.refresh(START_LEVEL)
 
     def refresh(self, level):
-        self.level_badge.setText(f"LEVEL  {level}/90")
+        self.level_badge.setText(f"LEVEL  {level}/{MAX_LEVEL}")
         for prop, value in gamedata.character_stats(self.detail, self.curve, level).items():
             if prop in self.values:
                 self.values[prop].setText(gamedata.format_stat(prop, value))
@@ -654,7 +716,10 @@ class CharacterPage(QWidget):
         self.element_filter = None  # shared by the grid's buttons and the rail's hover filter
         self._card_parts = {}  # char_id -> (portrait, element icon, rarity, logged) for redrawing rail icons
         self._request = 0
+        self._pending = None  # the request still loading, if any
         self._markup = {}
+        self._buffed = {}  # updated kit text (Buff toggle), by talent / constellation name
+        self._detail = None
         self._accent = PRYDWEN_ELEMENTS["GEO"]
         self._name = ""
         self.setStyleSheet(PAGE_CSS)
@@ -683,7 +748,7 @@ class CharacterPage(QWidget):
         self.placeholder.setStyleSheet("color: #8a91a0; font-size: 12pt; padding: 40px;")
         self.content_layout.addWidget(self.placeholder)
 
-        self.hero = Hero()
+        self.hero = Hero(compact=True, kicker="GENSHIN IMPACT CHARACTER DETAILS")
         self.content_layout.addWidget(self.hero)
         self.content_layout.addSpacing(26)
         tab_bar = QFrame()
@@ -718,12 +783,50 @@ class CharacterPage(QWidget):
             self.content_layout.addWidget(page)
         self.content_layout.addStretch()
         self.scroll.setWidget(content)
-        layout.addWidget(self.scroll, 1)
+        # while a character's page is fetched and built: their portrait and "Loading …" in the middle, in place
+        # of the guide, which then appears complete (rather than the old character being swapped out piece by piece)
+        self.detail_stack = QStackedWidget()
+        self.detail_stack.addWidget(self._build_loading_view())
+        self.detail_stack.addWidget(self.scroll)
+        self.detail_stack.setCurrentWidget(self.scroll)
+        layout.addWidget(self.detail_stack, 1)
         layout.addWidget(self._build_rail())  # character selection rail on the right
         self._tab_bar = tab_bar
         self._detail_widgets = [self.hero, tab_bar]
         for w in self._detail_widgets + self.tab_pages:
             w.hide()
+
+    def _build_loading_view(self):
+        view = QWidget()
+        v = QVBoxLayout(view)
+        v.setSpacing(14)
+        v.addStretch()
+        self.loading_card = QLabel()
+        self.loading_card.setFixedSize(LOADING_CARD, LOADING_CARD)
+        v.addWidget(self.loading_card, 0, Qt.AlignHCenter)
+        self.loading_text = _label("", "Body")
+        self.loading_text.setAlignment(Qt.AlignCenter)
+        self.loading_text.setWordWrap(True)
+        self.loading_text.setStyleSheet("color: #8a91a0; font-size: 13pt;")
+        v.addWidget(self.loading_text)
+        v.addStretch()
+        return view
+
+    def _show_loading(self, info, request, text=None):
+        """Show the loading view for a character (or an error message), if that load is still the current one."""
+        if request != self._request:
+            return
+        self.loading_text.setText(text or f"Loading {info.name}…")
+        self.loading_card.clear()
+
+        def portrait(pm):
+            if request == self._request and pm is not None:
+                card = card_pixmap(pm, None, info.rarity, LOADING_CARD)
+                card.setDevicePixelRatio(2)
+                self.loading_card.setPixmap(card)
+
+        gamedata.load_pixmap(info.icon, portrait)
+        self.detail_stack.setCurrentIndex(0)
 
     # ----- landing grid: every character at once -----
     def _build_grid_view(self):
@@ -734,14 +837,25 @@ class CharacterPage(QWidget):
         head, self.count_label = section_header("All characters")
         v.addWidget(head)
 
-        # Prydwen-style filters: [All] [5★] [4★] [elements] on the first row, weapon types under them.
-        controls = QHBoxLayout()
-        controls.setSpacing(4)
+        # Prydwen-style filters, stacked: search (and sort) / [All] [5★] [4★] [elements] / weapon types
+        top = QHBoxLayout()
+        top.setSpacing(4)
         self.search = QLineEdit(placeholderText="Search characters…")
         self.search.setFixedWidth(300)
         self.search.textChanged.connect(self.apply_filter)
-        controls.addWidget(self.search)
-        controls.addSpacing(12)
+        top.addWidget(self.search)
+        top.addStretch()
+        top.addWidget(_label("SORT", "PanelKicker"))
+        self.sort_box = QComboBox()
+        for label, key in SORTS:
+            self.sort_box.addItem(label, key)
+        self.sort_box.setMinimumWidth(150)
+        self.sort_box.currentIndexChanged.connect(lambda _: self.index and self.populate())
+        top.addWidget(self.sort_box)
+        v.addLayout(top)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(4)
         self.all_button = filter_button("All", tooltip="Clear all filters")
         self.all_button.setChecked(True)
         self.all_button.clicked.connect(self.clear_filters)
@@ -756,18 +870,10 @@ class CharacterPage(QWidget):
         self.element_group.changed.connect(self.set_element_filter)
         controls.addWidget(self.element_group)
         controls.addStretch()
-        controls.addWidget(_label("SORT", "PanelKicker"))
-        self.sort_box = QComboBox()
-        for label, key in SORTS:
-            self.sort_box.addItem(label, key)
-        self.sort_box.setMinimumWidth(150)
-        self.sort_box.currentIndexChanged.connect(lambda _: self.index and self.populate())
-        controls.addWidget(self.sort_box)
         v.addLayout(controls)
 
         weapons = QHBoxLayout()
         weapons.setSpacing(4)
-        weapons.addSpacing(300 + 12)  # line up under the "All" button
         self.weapon_group = FilterGroup(
             [(t, "", gamedata.weapon_type_icon_url(t), gamedata.weapon_type_name(t)) for t in gamedata.WEAPON_TYPES]
         )
@@ -798,7 +904,7 @@ class CharacterPage(QWidget):
         v.setContentsMargins(8, 14, 8, 10)
         v.setSpacing(8)
         back = QToolButton()
-        back.setIcon(shape_icon("grid", "#009eec"))
+        back.setIcon(shape_icon("grid", theme.accent_hex()))
         back.setIconSize(QSize(24, 24))
         back.setFixedSize(QSize(76, 40))
         back.setObjectName("FilterBtn")
@@ -947,24 +1053,57 @@ class CharacterPage(QWidget):
         info = self.index.characters[char_id]
         self._request += 1
         request = self._request
+        # a newly picked character always gets the loading view, for at least LOADING_MIN_MS, so switching
+        # never shows one character's page being swapped over to the next
+        # (a refresh of the same character keeps its page up while it updates)
+        waiting = {"min time", "images"} if first_time else set()
+        if first_time:
+            self._show_loading(info, request)
+            QTimer.singleShot(LOADING_MIN_MS, lambda: ready("min time"))
+        self._pending = request
 
         def fetch():
             try:  # colors and glossary links; the page still works with the plain text without them
                 markup = gamedata.fetch_character_markup(char_id)
             except Exception:
-                markup = {}
+                markup = ({}, {})
             return gamedata.fetch_character_detail(char_id), gamedata.fetch_avatar_curve(), markup
 
         def done(result, error):
             if request != self._request:
                 return
+            self._pending = None
             if error:
-                self.placeholder.setText(f"Couldn't load {info.name}: {error}")
-                self.placeholder.show()
+                self._show_loading(info, request, f"Couldn't load {info.name}: {error}")
                 return
-            self._render(info, *result)
-            if first_time:
-                self.scroll.verticalScrollBar().setValue(0)
+            if not first_time:  # a refresh of the page already up: update it in place
+                self._render(info, *result)
+                return
+            # built behind the loading view, which stays up until its images (art, icons) are in too,
+            # so the page appears whole instead of filling in piece by piece
+            self._pending = request
+            images = gamedata.track_images()
+            try:
+                self._render(info, *result)
+            finally:
+                gamedata.stop_tracking()
+            QTimer.singleShot(IMAGE_WAIT_MS, lambda: ready("images"))  # don't wait forever on a slow image
+            gamedata.when_loaded(images, lambda: ready("images"))
+
+        def ready(what):
+            waiting.discard(what)
+            if not waiting:
+                reveal()
+
+        def reveal():
+            if request != self._request or self._pending != request:
+                return  # another character was picked meanwhile, or it's already shown
+            self._pending = None
+            self.detail_stack.setCurrentWidget(self.scroll)
+            # arrange it before the first paint: built while hidden, its sections' layouts are only queued, and
+            # it would show a frame of them piled on each other; run every queued layout update now
+            QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+            self.scroll.verticalScrollBar().setValue(0)
 
         gamedata.run_async(fetch, done)
 
@@ -977,9 +1116,11 @@ class CharacterPage(QWidget):
     def _tab_changed(self, index):
         for i, page in enumerate(self.tab_pages):
             page.setVisible(i == index)
+        _make_selectable(self.scroll.widget())
 
     def _render(self, info, detail, curve, markup):
-        self._markup = markup
+        self._markup, self._buffed = markup
+        self._detail = detail
         self.placeholder.hide()
         for w in self._detail_widgets:
             w.show()
@@ -997,7 +1138,7 @@ class CharacterPage(QWidget):
 
     def _render_hero(self, info, detail, color):
         hero = self.hero
-        fill_hero(hero, info, detail, color)
+        fill_hero(hero, info, detail, color, with_profile=False)
 
         _clear(hero.actions)
         char_id = info.id
@@ -1012,7 +1153,27 @@ class CharacterPage(QWidget):
             add.setObjectName("Primary")
             add.clicked.connect(lambda: self.add_requested.emit(char_id))
             hero.actions.addWidget(add)
+        if self._buffed:
+            # like Project Amber's Buff toggle: the updated text of a reworked kit
+            buff = filter_button("Buff", tooltip="Show the updated kit text for this character's rework\n(the Buff toggle on Project Amber)")
+            buff.setFixedHeight(hero.actions.itemAt(0).widget().sizeHint().height())
+            buff.setMinimumWidth(64)
+            buff.setChecked(self._show_buffed())
+            buff.toggled.connect(self._buff_toggled)
+            hero.actions.addSpacing(6)
+            hero.actions.addWidget(buff)
         hero.actions.addStretch()
+
+    def _show_buffed(self):
+        return bool(self._buffed) and self.store.get_setting("kit_buff", True)
+
+    def _buff_toggled(self, on):
+        self.store.set_setting("kit_buff", on)
+        position = self.scroll.verticalScrollBar().value()
+        self._render_skills(self._detail, self._accent)
+        self._render_constellations(self._detail, self._accent)
+        self._tab_changed(self.tab_group.checkedId())
+        self.scroll.verticalScrollBar().setValue(position)
 
     def _render_profile(self, info, detail, curve):
         v = self.tab_layouts[0]
@@ -1021,6 +1182,11 @@ class CharacterPage(QWidget):
         v.addWidget(LevelStats(detail, curve))
         about = KitSection("About")
         about.body.addWidget(_label(rich_html(detail.info.detail), "Body", wrap=True))
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        for n, (key, value) in enumerate(profile_facts(detail)):
+            grid.addWidget(InfoTile(key, value or "—"), n // 2, n % 2)
+        about.body.addLayout(grid)
         v.addWidget(about)
         if detail.info.cv:
             voices = KitSection("Voice actors")
@@ -1056,9 +1222,26 @@ class CharacterPage(QWidget):
         ))
         v.addWidget(passives)
 
+    def _edit_my_build(self, info):
+        from dialogs import BuildDialog
+
+        dialog = BuildDialog(self.index, info, self.store.my_build(str(info.id)) or {}, self)
+        if dialog.exec():
+            self.store.set_my_build(str(info.id), dialog.values)
+            self._render_build(info)
+            _make_selectable(self.scroll.widget())
+            if self.store.character(str(info.id)):
+                self.message.emit(f"Saved {info.name}'s build")
+            else:
+                self.message.emit(f"Saved {info.name}'s build: used when you pick them as a teammate")
+
     def _text(self, entry):
-        """A talent's or constellation's description with the game's colors and links, when available."""
-        return self._markup.get(gamedata.clean(entry.name), entry.description)
+        """A talent's or constellation's description with the game's colors and links, when available
+        (the updated text when the Buff toggle is on)."""
+        name = gamedata.clean(entry.name)
+        if self._show_buffed() and name in self._buffed:
+            return self._buffed[name]
+        return self._markup.get(name, entry.description)
 
     def _render_constellations(self, detail, accent):
         v = self.tab_layouts[2]
@@ -1074,15 +1257,66 @@ class CharacterPage(QWidget):
         v.addWidget(section)
 
     def _render_build(self, info):
+        """My Build: weapon, artifacts, talents and constellation, for any character. A logged character's is
+        their Record Book build; it's also the build they start with when picked as a teammate on the log."""
         v = self.tab_layouts[3]
         _clear(v)
         v.addWidget(_section_title(f"{info.name} build", self._accent))
-        record = self.store.character(info.id)
+        char_id = str(info.id)
+        record = self.store.character(char_id)
+        build = self.store.my_build(char_id) or {}
+
+        idx = self.index
+        gear = Panel(accent=True)
+        head = QHBoxLayout()
+        head.addWidget(_label("MY BUILD", "PanelKicker"), 1)
+        edit = QPushButton("Edit build" if build.get("weapon_id") else "+  Fill out build")
+        edit.setObjectName("Primary")
+        edit.setCursor(Qt.PointingHandCursor)
+        edit.setToolTip("Weapon, artifacts, talent levels and constellation")
+        edit.clicked.connect(lambda: self._edit_my_build(info))
+        head.addWidget(edit)
+        gear.body.addLayout(head)
+        gear.body.addWidget(_label(
+            "Your build for this character: used when you pick them as a teammate on a character log"
+            + (" (and it's their Record Book build)." if record else "."), "Body", wrap=True))
+        if build.get("weapon_id"):
+            row = QHBoxLayout()
+            row.setSpacing(16)
+            weapon = idx.weapons.get(build.get("weapon_id"))
+            ref = build.get("refinement") or 1
+            wtile = ImageTile(88)
+            wtile.show_plus = False
+            wtile.setCursor(Qt.PointingHandCursor)
+            wtile.clicked.connect(lambda: self._edit_my_build(info))
+            if weapon:
+                wtile.set_content([weapon.icon], weapon.rarity, f"R{ref}")
+            row.addWidget(wtile)
+            row.addWidget(_label(f"<b>{weapon.name if weapon else '—'}</b><br>Refinement {ref}", "Body", wrap=True), 1)
+            sets = [idx.artifacts[a] for a in (build.get("artifact1"), build.get("artifact2")) if a in idx.artifacts]
+            atile = ImageTile(88)
+            atile.show_plus = False
+            atile.setCursor(Qt.PointingHandCursor)
+            atile.clicked.connect(lambda: self._edit_my_build(info))
+            if sets:
+                atile.set_content([s.icon for s in sets], max(s.rarity for s in sets), "4p" if len(sets) == 1 else "2p2p")
+            row.addWidget(atile)
+            if len(sets) == 1:
+                bonus = "<br>".join(f"<span style='color:#8a91a0'>{n}p:</span> {rich_html(b)}" for n, b in zip((2, 4), sets[0].bonuses))
+                text = f"<b>{sets[0].name}</b><br>{bonus}"
+            else:
+                text = "<br>".join(f"<b>{s.name}</b> <span style='color:#8a91a0'>2p:</span> {rich_html(s.bonuses[0])}" for s in sets)
+            row.addWidget(_label(text or "—", "Body", wrap=True), 2)
+            gear.body.addLayout(row)
+            gear.body.addWidget(_label(
+                f"Talents&nbsp;&nbsp;<b>{build.get('talent1') or 1} / {build.get('talent2') or 1} / {build.get('talent3') or 1}</b>"
+                f"&nbsp;&nbsp;&nbsp;&nbsp;Constellation&nbsp;&nbsp;<b>C{build.get('constellation') or 0}</b>", "Body", wrap=True))
+        v.addWidget(gear)
+
         if not record:
             empty = Panel()
             empty.body.addWidget(_label(f"{info.name} isn't in your Record Book yet.", "Body"))
             add = QPushButton("+  Add to Record Book")
-            add.setObjectName("Primary")
             add.clicked.connect(lambda: self.add_requested.emit(info.id))
             row = QHBoxLayout()
             row.addWidget(add)
@@ -1090,38 +1324,6 @@ class CharacterPage(QWidget):
             empty.body.addLayout(row)
             v.addWidget(empty)
             return
-
-        idx = self.index
-        gear = Panel(accent=True)
-        gear.body.addWidget(_label("EQUIPMENT", "PanelKicker"))
-        row = QHBoxLayout()
-        row.setSpacing(16)
-        weapon = idx.weapons.get(record["weapon_id"])
-        wtile = ImageTile(88)
-        wtile.show_plus = False
-        wtile.setCursor(Qt.ArrowCursor)
-        if weapon:
-            wtile.set_content([weapon.icon], weapon.rarity, f"R{record['refinement']}")
-        row.addWidget(wtile)
-        row.addWidget(_label(f"<b>{weapon.name if weapon else '—'}</b><br>Refinement {record['refinement']}", "Body", wrap=True), 1)
-        sets = [idx.artifacts[a] for a in (record["artifact1"], record["artifact2"]) if a in idx.artifacts]
-        atile = ImageTile(88)
-        atile.show_plus = False
-        atile.setCursor(Qt.ArrowCursor)
-        if sets:
-            atile.set_content([s.icon for s in sets], max(s.rarity for s in sets), "4p" if len(sets) == 1 else "2p2p")
-        row.addWidget(atile)
-        if len(sets) == 1:
-            bonus = "<br>".join(f"<span style='color:#8a91a0'>{n}p:</span> {rich_html(b)}" for n, b in zip((2, 4), sets[0].bonuses))
-            text = f"<b>{sets[0].name}</b><br>{bonus}"
-        else:
-            text = "<br>".join(f"<b>{s.name}</b> <span style='color:#8a91a0'>2p:</span> {rich_html(s.bonuses[0])}" for s in sets)
-        row.addWidget(_label(text or "—", "Body", wrap=True), 2)
-        gear.body.addLayout(row)
-        gear.body.addWidget(
-            _label(f"Talents&nbsp;&nbsp;<b>{record['talent1']} / {record['talent2']} / {record['talent3']}</b>", "Body", wrap=True)
-        )
-        v.addWidget(gear)
 
         # runs (with their notes) live on the character log; this is the summary
         dps = Panel()

@@ -24,6 +24,7 @@ CHARACTER_FIELDS = (
     "talent2",
     "talent3",
     "notes",
+    "constellation",
 )
 
 
@@ -79,6 +80,19 @@ class Store:
                 notes    TEXT NOT NULL DEFAULT '',
                 team     TEXT NOT NULL DEFAULT '[]'
             );
+            -- "My Build" on the Characters page for a character not in the Record Book (a logged one's is
+            -- their record): the build they get when picked as a teammate on the log
+            CREATE TABLE IF NOT EXISTS my_builds (
+                char_id       TEXT PRIMARY KEY,
+                weapon_id     INTEGER,
+                refinement    INTEGER NOT NULL DEFAULT 1,
+                artifact1     INTEGER,
+                artifact2     INTEGER,
+                talent1       INTEGER NOT NULL DEFAULT 1,
+                talent2       INTEGER NOT NULL DEFAULT 1,
+                talent3       INTEGER NOT NULL DEFAULT 1,
+                constellation INTEGER NOT NULL DEFAULT 0
+            );
             -- the last build entered for each teammate, used to fill them in on other teams
             CREATE TABLE IF NOT EXISTS support_builds (
                 char_id    TEXT PRIMARY KEY,
@@ -97,6 +111,8 @@ class Store:
         for column, kind in (("damage", "REAL"), ("mode", "TEXT"), ("is_best", "INTEGER NOT NULL DEFAULT 0")):
             if column not in columns:
                 self.conn.execute(f"ALTER TABLE dps_runs ADD COLUMN {column} {kind}")
+        if "constellation" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(characters)")}:
+            self.conn.execute("ALTER TABLE characters ADD COLUMN constellation INTEGER NOT NULL DEFAULT 0")
         if "team_name" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(runs)")}:
             self.conn.execute("ALTER TABLE runs ADD COLUMN team_name TEXT NOT NULL DEFAULT ''")
         self.conn.commit()
@@ -120,6 +136,7 @@ class Store:
         """Insert or update a logged character from a dict with CHARACTER_FIELDS keys."""
         values = {f: data.get(f) for f in CHARACTER_FIELDS}
         values["notes"] = values["notes"] or ""
+        values["constellation"] = values["constellation"] or 0
         existing = self.character(values["char_id"])
         if existing:
             sets = ", ".join(f"{f} = :{f}" for f in CHARACTER_FIELDS[1:])
@@ -181,6 +198,17 @@ class Store:
             else:
                 self.conn.execute("UPDATE runs SET is_best = 0 WHERE id = ?", (run_id,))
         for member in (data.get("team") or [])[1:]:
+            # a teammate with no My Build yet: the build given them here becomes it (from then on, they're
+            # always filled in from My Build)
+            mine = self.my_build(str(member["char_id"])) or {}
+            if not (mine.get("weapon_id") and mine.get("artifact1")) and member.get("weapon_id") and member.get("artifact1"):
+                self.set_my_build(str(member["char_id"]), member)
+            elif mine:
+                # they have one: the talent levels and constellation entered here update it (the weapon and
+                # artifacts stay as My Build has them)
+                levels = {f: member.get(f) for f in ("talent1", "talent2", "talent3", "constellation") if member.get(f) is not None}
+                if any(mine.get(f) != v for f, v in levels.items()):
+                    self.set_my_build(str(member["char_id"]), {**mine, **levels})
             saved = {"char_id": str(member["char_id"]), **{f: member.get(f) for f in BUILD_FIELDS}}
             self.conn.execute(
                 f"INSERT OR REPLACE INTO support_builds ({', '.join(saved)}) VALUES ({', '.join(':' + c for c in saved)})",
@@ -198,13 +226,33 @@ class Store:
         self.conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
         self.conn.commit()
 
-    def saved_build(self, char_id):
-        """A character's last-used teammate build, else their own logged build, else None."""
-        row = self.conn.execute("SELECT * FROM support_builds WHERE char_id = ?", (char_id,)).fetchone()
-        if row:
-            return dict(row)
+    def my_build(self, char_id):
+        """A character's "My Build" (Characters page): their logged build if they're in the Record Book,
+        else the one filled in for them, else None."""
         record = self.character(char_id)
-        return {f: record[f] for f in ("char_id",) + BUILD_FIELDS} if record else None
+        if record:
+            return {f: record[f] for f in ("char_id",) + BUILD_FIELDS + ("constellation",)}
+        row = self.conn.execute("SELECT * FROM my_builds WHERE char_id = ?", (str(char_id),)).fetchone()
+        return dict(row) if row else None
+
+    def set_my_build(self, char_id, values):
+        fields = {f: values.get(f) for f in BUILD_FIELDS + ("constellation",)}
+        if self.character(char_id):
+            self.update_character(char_id, **fields)
+            return
+        fields["char_id"] = str(char_id)
+        cols = ", ".join(fields)
+        self.conn.execute(f"INSERT OR REPLACE INTO my_builds ({cols}) VALUES ({', '.join(':' + c for c in fields)})", fields)
+        self.conn.commit()
+
+    def saved_build(self, char_id):
+        """The build a character gets when picked as a teammate: their My Build, else the build they last
+        had on a team, else None."""
+        mine = self.my_build(char_id)
+        if mine and (mine.get("weapon_id") or mine.get("artifact1")):
+            return mine
+        row = self.conn.execute("SELECT * FROM support_builds WHERE char_id = ?", (char_id,)).fetchone()
+        return dict(row) if row else mine
 
     # ---------- DPS ----------
     def dps_runs(self, char_id):
@@ -255,6 +303,16 @@ class Store:
     def delete_dps(self, run_id):
         self.conn.execute("DELETE FROM dps_runs WHERE id = ?", (run_id,))
         self.conn.commit()
+
+    # ---------- favourites (the ★ on a log page) ----------
+    def favourites(self):
+        return [str(c) for c in self.get_setting("favourites", []) or []]
+
+    def set_favourite(self, char_id, on):
+        favs = [c for c in self.favourites() if c != str(char_id)]
+        if on:
+            favs.append(str(char_id))
+        self.set_setting("favourites", favs)
 
     # ---------- settings (JSON values) ----------
     def get_setting(self, key, default=None):

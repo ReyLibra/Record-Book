@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 import gamedata
 from search import matches
-from widgets import card_pixmap
+from widgets import ImageTile, card_pixmap
 
 DIM = QColor(0, 0, 0, 150)  # how dark the app gets behind a popup
 MARGIN = 24  # smallest gap between the box and the window edge
@@ -338,4 +338,147 @@ class ArtifactDialog(Popup):
         if not self._order:
             return
         self.chosen = list(self._order)
+        super().accept()
+
+
+def _field_label(text):
+    label = QLabel(text)
+    label.setObjectName("FieldLabel")
+    return label
+
+
+def _level_box(items, index, tooltip):
+    box = QComboBox()
+    box.setObjectName("TalentBox")
+    box.setCursor(Qt.PointingHandCursor)
+    box.addItems(items)
+    box.setMaxVisibleItems(len(items))  # the whole list without scrolling
+    box.view().setMinimumWidth(56)
+    box.setCurrentIndex(index)
+    box.setToolTip(tooltip)
+    return box
+
+
+class BuildDialog(Popup):
+    """A character's build: weapon (with refinement), artifact sets, constellation and talent levels.
+    adding=True for a character being added (they need a weapon and artifacts first).
+    After exec(), `values` holds the fields to save."""
+
+    def __init__(self, index, info, record, parent=None, adding=False):
+        super().__init__(parent, f"Add {info.name}" if adding else f"{info.name}  ·  Build", 520)
+        self.index, self.info, self.adding = index, info, adding
+        self.values = {
+            "weapon_id": record.get("weapon_id"),
+            "refinement": record.get("refinement") or 1,
+            "artifact1": record.get("artifact1"),
+            "artifact2": record.get("artifact2"),
+            "constellation": record.get("constellation") or 0,
+            "talent1": record.get("talent1") or 1,
+            "talent2": record.get("talent2") or 1,
+            "talent3": record.get("talent3") or 1,
+        }
+
+        gear = QHBoxLayout()
+        gear.setSpacing(18)
+        self.weapon_tile = ImageTile(104)
+        self.weapon_tile.clicked.connect(self._pick_weapon)
+        self.weapon_name = QLabel()
+        self.artifact_tile = ImageTile(104)
+        self.artifact_tile.clicked.connect(self._pick_artifacts)
+        self.artifact_name = QLabel()
+        for label, tile, name in (("WEAPON", self.weapon_tile, self.weapon_name),
+                                  ("ARTIFACTS", self.artifact_tile, self.artifact_name)):
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            col.addWidget(_field_label(label))
+            col.addWidget(tile)
+            name.setWordWrap(True)
+            name.setFixedWidth(200)
+            name.setStyleSheet("font-size: 9pt; color: #d6d9df;")
+            col.addWidget(name)
+            col.addStretch()
+            gear.addLayout(col)
+        gear.addStretch()
+        self.body.addLayout(gear)
+
+        levels = QHBoxLayout()
+        levels.setSpacing(24)
+        cons_col = QVBoxLayout()
+        cons_col.setSpacing(4)
+        cons_col.addWidget(_field_label("CONSTELLATION"))
+        self.cons_box = _level_box([f"C{n}" for n in range(7)], self.values["constellation"], "Constellation level")
+        cons_col.addWidget(self.cons_box)
+        levels.addLayout(cons_col)
+        talent_col = QVBoxLayout()
+        talent_col.setSpacing(4)
+        talent_col.addWidget(_field_label("TALENT LEVEL"))
+        talents = QHBoxLayout()
+        talents.setSpacing(4)
+        self.talent_boxes = []
+        for i, name in enumerate(("Normal Attack", "Elemental Skill", "Elemental Burst")):
+            if i:
+                slash = QLabel("/")
+                slash.setStyleSheet("font-size: 14pt; color: rgba(255,255,255,0.55);")
+                talents.addWidget(slash)
+            box = _level_box([str(n) for n in range(1, 16)], self.values[f"talent{i + 1}"] - 1, name)
+            self.talent_boxes.append(box)
+            talents.addWidget(box)
+        talents.addStretch()
+        talent_col.addLayout(talents)
+        levels.addLayout(talent_col, 1)
+        self.body.addSpacing(6)
+        self.body.addLayout(levels)
+
+        self.missing = QLabel(f"Choose a weapon and artifacts to add {info.name}.")
+        self.missing.setStyleSheet("color: rgba(255,255,255,0.55);")
+        self.body.addSpacing(4)
+        self.body.addWidget(self.missing)
+        buttons = _buttons(self, "Add" if adding else "Save")
+        self.ok = buttons.button(QDialogButtonBox.Ok)
+        self.body.addWidget(buttons)
+        self._refresh()
+
+    def _refresh(self):
+        dim = "<span style='color:rgba(255,255,255,0.55)'>{}</span>"
+        weapon = self.index.weapons.get(self.values["weapon_id"]) if self.values["weapon_id"] else None
+        if weapon:
+            ref = self.values["refinement"]
+            self.weapon_tile.set_content([weapon.icon], weapon.rarity, f"R{ref}")
+            self.weapon_name.setText(f"{weapon.name}<br>{dim.format(f'Refinement {ref}')}")
+        else:
+            self.weapon_tile.clear()
+            self.weapon_name.setText(dim.format("Click to choose a weapon"))
+        sets = [self.index.artifacts.get(self.values[k]) for k in ("artifact1", "artifact2") if self.values[k]]
+        sets = [s for s in sets if s]
+        if sets:
+            self.artifact_tile.set_content([s.icon for s in sets], max(s.rarity for s in sets), "4p" if len(sets) == 1 else "2p2p")
+            self.artifact_name.setText("<br>".join(s.name for s in sets))
+        else:
+            self.artifact_tile.clear()
+            self.artifact_name.setText(dim.format("Click to choose artifact sets"))
+        ready = bool(self.values["weapon_id"] and self.values["artifact1"])
+        self.ok.setEnabled(ready)
+        self.missing.setVisible(not ready)
+
+    def _pick_weapon(self):
+        weapons = [w for w in self.index.weapons.values() if w.type == self.info.weapon_type]
+        dialog = WeaponDialog(weapons, self.values["weapon_id"], self.values["refinement"], self)
+        if dialog.exec() and dialog.weapon_id:
+            self.values.update(weapon_id=dialog.weapon_id, refinement=dialog.refinement)
+            self._refresh()
+
+    def _pick_artifacts(self):
+        current = (self.values["artifact1"], self.values["artifact2"])
+        dialog = ArtifactDialog(self.index.artifacts.values(), current, self)
+        if dialog.exec() and dialog.chosen:
+            chosen = dialog.chosen + [None]
+            self.values.update(artifact1=chosen[0], artifact2=chosen[1])
+            self._refresh()
+
+    def accept(self):
+        if not (self.values["weapon_id"] and self.values["artifact1"]):
+            return
+        self.values["constellation"] = self.cons_box.currentIndex()
+        for i, box in enumerate(self.talent_boxes):
+            self.values[f"talent{i + 1}"] = box.currentIndex() + 1
         super().accept()

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Record Book"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # The database, caches and crash.log live next to the program: next to record_book.py when run
 # from source, next to "Record Book.exe" when packaged (PyInstaller unpacks the code itself into a
