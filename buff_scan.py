@@ -11,7 +11,13 @@ import re
 import gamedata
 
 # bump when the scanner changes, so saved results are read again from the kits
-VERSION = 23
+VERSION = 27
+# {character: [(source, how its line starts)]}: buffs only the character gets, though the kit text reads like a
+# team buff (Razor's C1 is his own DMG; Linnea's C6 doubles her own Field Catalog use)
+SELF_ONLY = {
+    "Razor": [("C1", "Picking up an Elemental Orb")],
+    "Linnea": [("C6", "When consuming Field Catalog")],
+}
 from buffs_data import ASCENDANT, HEXEREI, TYPES
 
 _TYPE_KEYS = set(TYPES)
@@ -125,7 +131,7 @@ def _types(s, table_values=False, enemy_context=False):
             or re.search(rf"deal [\d.]+% of [\w' ]{{0,25}}{_STAT} as (increased|additional)", s)
             or re.search(r"increase in dmg is (?:equal to|based on)", s)
             or re.search(r"increase[sd]? the dmg[^.]{0,60}by [\d./%]+ of\b", s)
-            or re.search(rf"(bonus|additional) dmg[^.]{{0,30}}based on", s)
+            or re.search(r"(bonus|additional) dmg[^.]{0,30}based on", s)
             # a flat number rather than a %: "will increase the Stellar Swirl reaction DMG … by 260, as well as
             # Hydro DMG and Cryo DMG dealt by 140" (Vodyanitsa's Lead Vocal)
             or re.search(r"\bdmg\b[^.;%]{0,80}?\b(?:increase[sd]?|dealt) by [\d,]+(?![\d.,]*\s*(?:%|[a-z]))", s)):
@@ -424,6 +430,13 @@ def _scan_text(source, text, names, values="", term_info=None, own_names=(), spe
                     tags = "quills " + tags
             entries[-1] = (last[0], tags, last[2], _append(last[3], sentence, values)) + last[4:]
             continue
+        # the amount of the line before ("Lunar-Charged: ATK of your current active character increases." /
+        # "Increase in ATK is equal to 1% of Columbina's Max HP."): part of that entry
+        if (entries and entries[-1][0] == source and re.search(r"\d", s)
+                and re.match(r"(the |this |that )?(increase|decrease|bonus|reduction)( in [\w' -]+)? (is|will be) (equal to|based on|\d)", s)):
+            last = entries[-1]
+            entries[-1] = (last[0], last[1], last[2], _append(last[3], sentence, values)) + last[4:]
+            continue
         types = _types(s, table_values=bool(values), enemy_context=context == "enemy")
         if "quills" in types and not spent and not any(t in s for t in spent_terms):
             # flat DMG that isn't used up (Faruzan's Hurricane Guard, every 0.8s) is a plain DMG increase
@@ -696,13 +709,22 @@ def scan_character(char_id, name):
             continue
         talent_obj, base = raised
         at13 = _values(talent_obj, 13)
-        if not at13:
-            continue
+        if not at13 or at13 == _values(talent_obj, 10):
+            continue  # the buff doesn't grow past level 10 (Ayato's Burst: Normal Attack DMG stays 20%)
         tags = " ".join(dict.fromkeys(t for e in base for t in e[1].split()))
         kind = "Q" if base[0][0].startswith("Q") else "E"
         lead = next((e for e in base if e[2] != "enemy"), base[0])
         entries.append((source, tags, lead[2], f"{kind}(13): {gamedata.clean(talent_obj.name)} at talent level 13 ({at13})",
                         lead[4], ""))
+    # effects a constellation lets stack (Alyosha's C6: "The Hunter's Precision effect … can now stack, max 2
+    # stacks"): the Buff/Shred List's totals count them that many times
+    stacks = []
+    for source, sname, raw, _values_, talent in sections:
+        if talent is not None:
+            continue
+        for m in re.finditer(r"(?:the\s+)?([A-Z][\w'’ -]{2,40}?) effect\b[^.]{0,80}?\bcan (?:now )?stack,?\s*(?:up to\s*)?"
+                             r"max(?:imum)?\.?\s*(?:of\s*)?(\d+)\s*stacks", gamedata.clean(raw)):
+            stacks.append([source, re.sub(r"^(?:the|an?)\s+", "", m.group(1).strip(), flags=re.I), int(m.group(2))])
     # utility only counts for the party's stamina, cooldowns and infusions, not the character's own skills
     own_skills = [sname.lower() for _, sname, *_ in sections]
     def own_cooldown(text):  # "Lightning Blade's CD is decreased", "the CD of Inuzaka All-Round Defense"
@@ -714,8 +736,11 @@ def scan_character(char_id, name):
     entries = [e for e in entries if not own_cooldown(e[3]) and (
         e[1].split()[0] != "utility" or len(e[1].split()) > 1 and e[1].split()[1] in _TYPE_KEYS
         or re.search(r"stamina|infus|\bcd\b|cooldown", e[3], re.I))]
+    # buffs the character only gives themself, which the kit's wording doesn't make clear
+    skipped = SELF_ONLY.get(name.replace("Lumine (", "Aether ("), ())
+    entries = [e for e in entries if not any(e[0] == source and e[3].startswith(start) for source, start in skipped)]
     terms = {}
     if entries:
         used = " ".join(e[3] for e in entries)
         terms = {t: list(v) for t, v in all_terms.items() if re.search(rf"(?<![\w-]){re.escape(t)}(?![\w-])", used)}
-    return {"entries": [list(e) for e in entries], "terms": terms}
+    return {"entries": [list(e) for e in entries], "terms": terms, "stacks": stacks}

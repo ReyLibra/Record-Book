@@ -23,6 +23,7 @@ import weapon_sources
 from gamedata import html_text, rich_html
 from search import matches
 from widgets import (
+    tint,
     EvenGrid,
     FilterGroup,
     ImageTile,
@@ -296,11 +297,19 @@ class BrowsePage(QWidget):
             item.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
             item.setSizeHint(GRID_CELL)
             self.grid.addItem(item)
-            gamedata.load_pixmap(
-                entry.icon,
-                lambda pm, item=item, r=entry.rarity: pm and item.setIcon(QIcon(card_pixmap(pm, None, r))),
-                bulk=True,
-            )
+            if self.kind == "weapon":  # with its type's symbol top-left (in white, where characters show their element)
+                def with_type(type_pm, item=item, entry=entry):
+                    type_pm = tint(type_pm, "#ffffff") if type_pm else None
+                    gamedata.load_pixmap(entry.icon, lambda pm: pm and item.setIcon(
+                        QIcon(card_pixmap(pm, type_pm, entry.rarity))), bulk=True)
+
+                gamedata.load_pixmap(gamedata.weapon_type_icon_url(entry.type), with_type)
+            else:
+                gamedata.load_pixmap(
+                    entry.icon,
+                    lambda pm, item=item, r=entry.rarity: pm and item.setIcon(QIcon(card_pixmap(pm, None, r))),
+                    bulk=True,
+                )
         self._fill_sources()  # the counts follow the listed weapons (Unreleased on / off)
         self.apply_filter()
         # never an empty detail panel: keep the item being shown, else open the first one in the grid

@@ -1,34 +1,32 @@
-"""Characters page, laid out like a Prydwen character guide.
+﻿"""Characters page, laid out like a Prydwen character guide.
 
 Centre: a hero banner (art, badges, info grid) and tabs split into titled sections.
 Right: a searchable, element-filterable list of every character to scroll between.
 """
+
+import html
+import re
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QCursor, QIcon, QLinearGradient, QPainter, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
-    QAbstractItemView,
     QButtonGroup,
     QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QListView,
     QListWidget,
     QListWidgetItem,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
     QStackedWidget,
-    QTableWidget,
-    QTableWidgetItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -39,6 +37,7 @@ import theme
 from search import matches
 from gamedata import pretty, rich_html
 from widgets import ColumnGrid, EvenGrid, FilterGroup, ImageTile, clear_layout, filter_button, glossary_tooltips, section_header, RemoteIcon, card_pixmap, shape_icon
+from widgets import CORNER, SMALL_CORNER, corner_path, corners
 
 TABS = ["PROFILE", "SKILLS", "CONSTELLATIONS", "MY BUILD"]
 SORTS = [("Newest first", "newest"), ("Oldest first", "oldest"), ("Name (A–Z)", "name"), ("Rarity", "rarity")]
@@ -97,6 +96,9 @@ def page_css(accent):
 #KitSection {{ background: {_rgba(SECTION_BG, 0.92)}; border: 1px solid {BORDER}; border-radius: 0; }}
 #KitSectionHeader {{ border: none; border-bottom: 1px solid {BORDER};
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {_blend((20, 21, 25), a, 0.12)}, stop:0.48 #141519, stop:1 #141519); }}
+QPushButton#CollapseHeader {{ text-align: left; padding: 14px 18px; border: none; border-radius: 0;
+                              background: transparent; font-size: 13.5pt; font-weight: 700; color: #ffffff; }}
+QPushButton#CollapseHeader:hover {{ color: rgb{a}; }}
 #KitSectionTitle {{ font-size: 13.5pt; font-weight: 700; color: #ffffff; }}
 #KitSectionNote {{ color: #8c909b; font-size: 8.5pt; }}
 #Card {{ background: {_rgba(CARD_BG, 0.92)}; border: 1px solid {BORDER}; border-radius: 0; }}
@@ -127,7 +129,10 @@ QSlider::handle:horizontal {{ background: rgb{a}; width: 14px; height: 14px; mar
 #FilterBtn {{ background: #2c2d33; border: 1px solid #33343a; border-radius: 3px; padding: 3px; font-size: 8.5pt; font-weight: 600; }}
 #FilterBtn:hover {{ border-color: #009eec; }}
 #FilterBtn:checked {{ border-color: #009eec; background: #009eec; color: #ffffff; }}
-"""
+""" + corners(["#Hero", "#KitSection", "#Card", "#AccentCard", "#ConsCard", "#Panel", "#AccentPanel"]) + corners(
+        ["#InfoTile", "#StatTile", "#MultiplierBox"], SMALL_CORNER) + (
+        # a section's header sits in its top-right corner: rounded the same, so it doesn't square it off
+        f"#KitSectionHeader {{ border-top-right-radius: {CORNER - 1}px; }}\n")
 
 
 PAGE_CSS = page_css(PRYDWEN_ELEMENTS["GEO"])
@@ -182,6 +187,38 @@ class KitSection(QFrame):
         outer.addLayout(self.body)
 
 
+class CollapsibleSection(QFrame):
+    """A section box whose header opens and closes it (starts closed)."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title, note="", opened=False):
+        super().__init__()
+        self.setObjectName("KitSection")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(1, 1, 1, 1)
+        outer.setSpacing(0)
+        self.header = QPushButton()
+        self.header.setObjectName("CollapseHeader")
+        self.header.setCursor(Qt.PointingHandCursor)
+        self.header.clicked.connect(lambda: self.set_open(not self.body_widget.isVisible()))
+        self._title, self._note = title.upper(), note
+        outer.addWidget(self.header)
+        self.body_widget = QWidget()
+        self.body = QVBoxLayout(self.body_widget)
+        self.body.setContentsMargins(14, 14, 14, 14)
+        self.body.setSpacing(10)
+        outer.addWidget(self.body_widget)
+        self.set_open(opened, notify=False)
+
+    def set_open(self, opened, notify=True):
+        self.body_widget.setVisible(opened)
+        arrow = "\u25be" if opened else "\u25b8"
+        self.header.setText(f"{arrow}  {self._title}" + (f"     {self._note}" if self._note else ""))
+        if notify:
+            self.toggled.emit(opened)
+
+
 class CardHeader(QFrame):
     """Card header: dark strip with a soft accent glow behind the 64px icon, kicker and name."""
 
@@ -211,6 +248,9 @@ class CardHeader(QFrame):
 
     def paintEvent(self, event):
         p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        # the header is the top of its card: round its top-right corner the same as the card's
+        p.setClipPath(corner_path(QRectF(self.rect()), CORNER - 1, top_right=True, bottom_left=False))
         p.fillRect(self.rect(), theme.qcolor(*HEADER_BG, 184))
         glow = QRadialGradient(QPointF(48, self.height() / 2), 74)
         glow.setColorAt(0, QColor(*self.accent, 41))
@@ -347,8 +387,9 @@ class Hero(QFrame):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        p.setClipRect(rect)
+        p.setClipPath(corner_path(rect, CORNER - 1))  # (inside the banner's rounded corners)
         scaled = self._art.scaled(int(rect.width() * 0.85), int(rect.height() * 1.15), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         x = rect.right() - scaled.width() + scaled.width() * 0.12
         y = rect.center().y() - scaled.height() / 2
@@ -791,7 +832,6 @@ class CharacterPage(QWidget):
         self.detail_stack.setCurrentWidget(self.scroll)
         layout.addWidget(self.detail_stack, 1)
         layout.addWidget(self._build_rail())  # character selection rail on the right
-        self._tab_bar = tab_bar
         self._detail_widgets = [self.hero, tab_bar]
         for w in self._detail_widgets + self.tab_pages:
             w.hide()
@@ -1221,6 +1261,7 @@ class CharacterPage(QWidget):
             if label not in gamedata.ACTIVE_LABELS
         ))
         v.addWidget(passives)
+        self._render_glossary(v, talents, detail)
 
     def _edit_my_build(self, info):
         from dialogs import BuildDialog
@@ -1234,6 +1275,35 @@ class CharacterPage(QWidget):
                 self.message.emit(f"Saved {info.name}'s build")
             else:
                 self.message.emit(f"Saved {info.name}'s build: used when you pick them as a teammate")
+
+    def _render_glossary(self, v, talents, detail):
+        """The terms this character's kit uses, with what they mean (collapsed to start with)."""
+        keys = []
+        for entry in list(talents) + list(detail.constellations):
+            for key in re.findall(r"term:([\w-]+)", self._text(entry) or ""):
+                if key not in keys:
+                    keys.append(key)
+        names = {gamedata.GLOSSARY[k][0] for k in keys if k in gamedata.GLOSSARY}
+        for name, _description in gamedata.CHAR_GLOSSARY.get(self.current_id, []):
+            key = next((k for k, (n, _d, src) in gamedata.GLOSSARY.items() if n == name and src == "Game glossary"), None)
+            if key and name not in names:
+                keys.append(key)
+                names.add(name)
+        terms = sorted({gamedata.GLOSSARY[k][0]: k for k in keys if k in gamedata.GLOSSARY}.items(), key=lambda t: t[0].lower())
+        if not terms:
+            return
+        section = CollapsibleSection("Glossary", f"{len(terms)} term{'s' if len(terms) != 1 else ''} used in this kit",
+                                     opened=getattr(self, "_glossary_open", False))
+        section.toggled.connect(lambda on: setattr(self, "_glossary_open", on))
+        for name, key in terms:
+            _name, description, source = gamedata.GLOSSARY[key]
+            body = gamedata._GLOSSARY_LINK.sub(r"\1", description) if source == "Game glossary" else description
+            text = rich_html(body) if source == "Game glossary" else html.escape(body).replace("\n", "<br>")
+            label = _label(f"<b style='color:rgb{self._accent}'>{html.escape(name)}</b><br>{text}"
+                           f"<br><span style='color:#8a91a0; font-size:8pt'>{html.escape(source)}</span>", "Body", wrap=True)
+            label.setTextFormat(Qt.RichText)
+            section.body.addWidget(label)
+        v.addWidget(section)
 
     def _text(self, entry):
         """A talent's or constellation's description with the game's colors and links, when available

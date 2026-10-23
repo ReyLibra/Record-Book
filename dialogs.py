@@ -129,19 +129,6 @@ def confirm(parent, title, text, yes="Yes", no="Cancel"):
     return dialog.exec() == QDialog.Accepted
 
 
-def inform(parent, title, text):
-    """A message in a popup with an OK button."""
-    dialog = Popup(parent, title, width=380)
-    label = QLabel(text)
-    label.setWordWrap(True)
-    dialog.body.addWidget(label)
-    buttons = QDialogButtonBox(QDialogButtonBox.Ok)
-    buttons.button(QDialogButtonBox.Ok).setObjectName("Primary")
-    buttons.accepted.connect(dialog.accept)
-    dialog.body.addWidget(buttons)
-    dialog.exec()
-
-
 class _IconList(QListWidget):
     """A list of game items with icons that load in the background."""
 

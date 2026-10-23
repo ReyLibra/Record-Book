@@ -4,7 +4,6 @@ import json
 import shutil
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 
 from app_info import APP_DIR
 
@@ -167,6 +166,11 @@ class Store:
         ).fetchall()
         return [dict(r, team=json.loads(r["team"] or "[]")) for r in rows]
 
+    def all_runs(self):
+        """Every logged run (any character), `team` decoded."""
+        rows = self.conn.execute("SELECT * FROM runs ORDER BY id").fetchall()
+        return [dict(r, team=json.loads(r["team"] or "[]")) for r in rows]
+
     def run(self, run_id):
         row = self.conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return dict(row, team=json.loads(row["team"] or "[]")) if row else None
@@ -255,10 +259,6 @@ class Store:
         return dict(row) if row else mine
 
     # ---------- DPS ----------
-    def dps_runs(self, char_id):
-        """Runs in the order they were added."""
-        return [dict(r) for r in self.conn.execute("SELECT * FROM dps_runs WHERE char_id = ? ORDER BY id", (char_id,))]
-
     def best_run_id(self, char_id, mode=None):
         """The run with the highest DPS (the newest one on a tie), overall or for one mode, or None."""
         sql = "SELECT id FROM runs WHERE char_id = ? AND dps > 0"
@@ -278,31 +278,6 @@ class Store:
         else:
             row = self.conn.execute("SELECT MAX(dps) FROM runs WHERE char_id = ?", (char_id,)).fetchone()
         return row[0] or 0
-
-    def add_dps(self, char_id, dps, run_date, note="", damage=None, mode=None):
-        cur = self.conn.execute(
-            "INSERT INTO dps_runs (char_id, dps, run_date, note, damage, mode) VALUES (?, ?, ?, ?, ?, ?)",
-            (char_id, dps, run_date, note, damage, mode),
-        )
-        self.conn.commit()
-        return cur.lastrowid
-
-    def update_dps(self, run_id, **fields):
-        bad = set(fields) - {"dps", "damage", "mode", "note"}
-        if bad:
-            raise ValueError(f"Unknown fields: {bad}")
-        sets = ", ".join(f"{f} = ?" for f in fields)
-        self.conn.execute(f"UPDATE dps_runs SET {sets} WHERE id = ?", (*fields.values(), run_id))
-        self.conn.commit()
-
-    def mark_best_dps(self, char_id, run_id):
-        """Make run_id the character's highest DPS (None clears the mark)."""
-        self.conn.execute("UPDATE dps_runs SET is_best = (id = ?) WHERE char_id = ?", (run_id or -1, char_id))
-        self.conn.commit()
-
-    def delete_dps(self, run_id):
-        self.conn.execute("DELETE FROM dps_runs WHERE id = ?", (run_id,))
-        self.conn.commit()
 
     # ---------- favourites (the ★ on a log page) ----------
     def favourites(self):

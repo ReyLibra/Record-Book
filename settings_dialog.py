@@ -52,10 +52,12 @@ class SettingsDialog(Popup):
         self.body.addWidget(_section("THEME"))
         self.theme_box = QComboBox()
         for key in theme.THEMES:
+            if key == theme.CHARACTER_THEMES[0]:  # the elements, then (after a line) the characters
+                self.theme_box.insertSeparator(self.theme_box.count())
             self.theme_box.addItem(theme.THEME_NAMES[key], key)
-        self.theme_box.setCurrentIndex(max(0, theme.THEMES.index(self._chosen[1]) if self._chosen[1] in theme.THEMES else 0))
-        self.theme_box.setToolTip("Reskin the app in an element's colours")
-        self.theme_box.currentIndexChanged.connect(lambda i: self._pick_look(1, theme.THEMES[i]))
+        self.theme_box.setCurrentIndex(max(0, self.theme_box.findData(self._chosen[1])))
+        self.theme_box.setToolTip("Reskin the app in an element's or a character's colours")
+        self.theme_box.currentIndexChanged.connect(lambda i: self._pick_look(1, self.theme_box.itemData(i)))
         self.body.addWidget(self.theme_box)
         look_row = QHBoxLayout()
         self.look_note = QLabel("Record Book restarts to apply the new look.")

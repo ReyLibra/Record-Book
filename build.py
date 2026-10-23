@@ -7,7 +7,7 @@ crash.log as running from source. Build files go in build/ (safe to delete).
 Needs:  pip install pyinstaller
 """
 
-import shutil
+import re
 import sys
 from pathlib import Path
 
@@ -50,7 +50,9 @@ def make_icon():
 
 def make_version_file():
     """Windows file properties (Details tab): name, version, description."""
-    parts = [int(p) for p in VERSION.split(".")] + [0] * (4 - len(VERSION.split(".")))
+    # Windows wants four numbers: the leading "1.2.0" of a version like "1.2.0(Unreleased)"
+    numbers = re.match(r"[\d.]+", VERSION).group(0).strip(".").split(".")
+    parts = [int(p) for p in numbers] + [0] * (4 - len(numbers))
     nums = ", ".join(str(p) for p in parts[:4])
     VERSION_FILE.write_text(
         f"""VSVersionInfo(

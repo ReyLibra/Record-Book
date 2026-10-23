@@ -16,7 +16,6 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage, QPixmap
@@ -49,7 +48,7 @@ CACHE_DIR = HERE / ".cache"
 IMG_DIR = CACHE_DIR / "img"
 ASSETS = "https://gi.yatta.moe/assets/UI/"
 
-ELEMENTS = ["PYRO", "HYDRO", "ELECTRO", "CRYO", "ANEMO", "GEO", "DENDRO"]
+ELEMENTS = ["PYRO", "HYDRO", "DENDRO", "ELECTRO", "ANEMO", "CRYO", "GEO"]  # the DPS Log's column order
 ELEMENT_COLORS = {
     "PYRO": "#ef7a35",
     "HYDRO": "#4cc2f1",
@@ -667,6 +666,7 @@ def fetch_banners():
             continue
         banners.append({
             "name": b.get("name") or "Event Wish",
+            "start": b.get("start_time") or 0,
             "end": b["end_time"],
             "characters": [(c["id"], int(c.get("rarity") or 4)) for c in b.get("characters") or []],
             "weapons": [(w["id"], int(w.get("rarity") or 4)) for w in b.get("weapons") or []],
@@ -675,7 +675,48 @@ def fetch_banners():
     return banners
 
 
+WISH_LIST_URL = ("https://genshin-impact.fandom.com/api.php?action=parse&page=Wish/List&prop=text&format=json")
+
+
+def fetch_wish_art():
+    """The current wishes' banner pictures from the Genshin wiki (Fandom's Wish/List, its newest phase), as
+    [{"title", "image", "kind": 'character' / 'weapon' / 'chronicled'}] in the wiki's order."""
+    import json
+
+    req = urllib.request.Request(WISH_LIST_URL, headers={"User-Agent": "RecordBook/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        page = json.load(resp)["parse"]["text"]["*"]
+    start = page.find("Event Wishes")
+    rows = re.findall(r"<tr>(.*?)</tr>", page[start:], re.S)
+    found, phases = [], 0
+    for row in rows:
+        if "<th colspan" in row:  # a phase's heading: the newest one comes first
+            phases += 1
+            if phases > 1:
+                break
+            continue
+        for name, attrs in re.findall(r'data-image-name="([^"]+)"([^>]*)', row):
+            kind = ("weapon" if name.startswith("Epitome Invocation")
+                    else "chronicled" if name.startswith("Chronicled") else "character")
+            src = re.search(r'data-src="([^"]+)"', attrs)
+            src = src.group(1) if src else None
+            if src is None:
+                tag = row[:row.find(f'data-image-name="{name}"')]
+                src = re.findall(r'src="(https://static[^"]+)"', tag)
+                src = src[-1] if src else None
+            if not src:
+                continue
+            image = re.sub(r"/scale-to-width-down/\d+", "/scale-to-width-down/640", html.unescape(src))
+            image += "&format=original"  # PNG (the wiki otherwise sends WebP)
+            title = html.unescape(re.sub(r"\s*\d{4}-\d{2}-\d{2}.*$", "", name.rsplit(".", 1)[0]))
+            found.append({"title": title, "image": image, "kind": kind})
+    return found
+
+
 # ---------- images ----------
+_UNCHECKED_IMAGE_HOSTS = ("https://static.wikia.nocookie.net/",)
+
+
 def fetch_image(url):
     """Return image bytes from the disk cache or the web, or None if it doesn't exist."""
     path = IMG_DIR / (hashlib.sha1(url.encode()).hexdigest()[:20] + ".png")
@@ -692,6 +733,18 @@ def fetch_image(url):
         if e.code == 404:
             return None
         raise
+    except urllib.error.URLError as e:
+        # the wiki's picture host has served an expired certificate: for its banner pictures only (no
+        # sign-in or personal data involved), read them without the certificate check
+        import ssl
+
+        if not (isinstance(e.reason, ssl.SSLCertVerificationError) and url.startswith(_UNCHECKED_IMAGE_HOSTS)):
+            raise
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=30, context=context) as resp:
+            data = resp.read()
     IMG_DIR.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".{threading.get_ident()}.tmp")  # never let a reader see a half-written file
     tmp.write_bytes(data)

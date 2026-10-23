@@ -30,7 +30,7 @@ import gamedata
 from character_page import PRYDWEN_ELEMENTS, Hero, KitSection, _label, fill_hero, page_css
 from dialogs import ArtifactDialog, CharacterSearchDialog, WeaponDialog, confirm
 from store import BUILD_FIELDS
-from widgets import ImageTile, card_pixmap, clear_layout, filter_button, themed_calendar
+from widgets import CORNER, ImageTile, card_pixmap, clear_layout, corners, filter_button, themed_calendar
 
 # DPS = total damage ÷ the mode's time (seconds)
 MODES = [("abyss", "Spiral Abyss", 90), ("fearless", "Stygian Fearless", 120), ("dire", "Stygian Dire", 120)]
@@ -45,14 +45,15 @@ ROW_FULL_WIDTH = 1080  # a run's summary row narrower than this uses the dense c
 DENSE_PORTRAIT = 56
 PORTRAIT = 64  # team portraits in a run's summary, each with its weapon and artifact set beside it
 GEAR_ICON = (PORTRAIT - 3) // 2
+SUMMARY_COLUMN = 200  # a run's date / DPS / team name, the same width in every row (so the teams line up)
+LEVELS_COLUMN = 54  # a teammate's "C6" and "10/13/13", the same width for each (so the cells are evenly spaced)
 NOTES_WIDTH = 300  # the run's notes on the right of the summary
 NOTES_CHARS = 140
-MEMBER_FIELDS = ("char_id", "name") + BUILD_FIELDS + ("constellation",)
 
 LOG_CSS = """
-#LogCard { background: rgba(31,33,39,0.92); border: 1px solid #373a43; border-radius: 0; }
-#LogMainCard { background: rgba(31,33,39,0.92); border: 1px solid #373a43; border-top: 2px solid ACCENT; border-radius: 0; }
-#RunItem { background: rgba(28,29,34,0.92); border: 1px solid #373a43; border-radius: 0; }
+#LogCard { background: rgba(28,29,35,0.95); border: 1px solid #30323c; border-radius: 0; }
+#LogMainCard { background: rgba(28,29,35,0.95); border: 1px solid #30323c; border-top: 2px solid ACCENT; border-radius: 0; }
+#RunItem { background: rgba(28,29,35,0.95); border: 1px solid #30323c; border-radius: 0; }
 #RunItem[best="true"] { border-left: 3px solid #f4c35f; }
 #RunHead { background: rgba(17,18,22,0.72); border: none; border-radius: 0; }
 #RunHead:hover { background: rgba(0,158,236,0.08); }
@@ -74,7 +75,9 @@ QPushButton#DeleteRun:hover { border-color: #f75058; background: rgba(247,80,88,
 #RunNotes { color: rgba(255,255,255,0.62); font-size: 9pt; }
 #BestBadge { background: rgba(244,195,95,0.12); border: 1px solid rgba(244,195,95,0.46); color: #f4c35f;
              font-size: 8pt; font-weight: 900; padding: 2px 6px; }
-"""
+""" + corners(["#LogCard", "#LogMainCard", "#RunItem"]) + (
+    # a run's header fills its top (and, folded, the whole run): its corners follow the run's
+    f"#RunHead {{ border-top-right-radius: {CORNER - 1}px; border-bottom-left-radius: {CORNER - 1}px; }}\n")
 
 
 def _parse_number(text):
@@ -493,6 +496,20 @@ class RunEditor(QWidget):
             self.changed.emit()
 
 
+def visible_room(widget, fallback):
+    """How wide a widget can be on screen: the visible width of the scroll area it's in, less the margins on
+    either side of it (fallback when it isn't in one)."""
+    from PySide6.QtWidgets import QScrollArea
+
+    parent = widget.parentWidget()
+    while parent is not None and not isinstance(parent, QScrollArea):
+        parent = parent.parentWidget()
+    if parent is None:
+        return fallback
+    offset = widget.mapTo(parent.widget(), widget.rect().topLeft()).x()  # (the page's margin on the left)
+    return parent.viewport().width() - 2 * offset
+
+
 class _ClickFrame(QFrame):
     clicked = Signal()
 
@@ -508,8 +525,9 @@ class RunItem(QFrame):
     delete_requested = Signal(int)
     toggled = Signal(object)  # this run, opened or closed
 
-    def __init__(self, store, index, run, best=False, expanded=False):
-        """best: the run is the highest in its mode (the mark says which mode)."""
+    def __init__(self, store, index, run, best=False, expanded=False, dense=False):
+        """best: the run is the highest in its mode (the mark says which mode). dense: start with the narrow
+        row's cells (the page knows its width; worked out again once the row is laid out)."""
         super().__init__()
         self.setObjectName("RunItem")
         self.setProperty("best", "true" if best else "false")
@@ -537,12 +555,14 @@ class RunItem(QFrame):
         self.summary = QLabel()
         self.summary.setStyleSheet("font-size: 10pt;")
         self.summary.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.summary.setFixedWidth(SUMMARY_COLUMN)
+        self.summary.setWordWrap(True)  # (a long team name wraps)
         self.portraits = QHBoxLayout()
         self.portraits.setSpacing(10)
         self._mode_name = MODE_NAMES.get(run.get('mode'), '').upper()
         self.best_badge = _label(f"★ HIGHEST · {self._mode_name}", "BestBadge")
         self.best_badge.setAlignment(Qt.AlignCenter)
-        self._dense = False  # a narrow row: smaller team cells, the mark on two lines
+        self._dense = dense  # a narrow row: smaller team cells, the mark on two lines
         for w in (self.arrow, self.summary, self.best_badge):
             w.setAttribute(Qt.WA_TransparentForMouseEvents)
         h.addWidget(self.arrow)
@@ -565,31 +585,48 @@ class RunItem(QFrame):
         h.addWidget(self.best_badge, 0, Qt.AlignVCenter)
         v.addWidget(self.head)
 
+        # the editor is built the first time the run is opened (building every run's editor up front, with its
+        # team cards and their dozens of dropdowns, made opening a log freeze for half a second)
+        self.run = run
+        self.editor = None
+        self._expanded = False
         self.body = QWidget()
-        b = QVBoxLayout(self.body)
-        b.setContentsMargins(12, 8, 12, 10)
-        self.editor = RunEditor(store, index, run)
-        self.editor.changed.connect(self._save)
-        self.editor.delete_requested.connect(lambda: self.delete_requested.emit(self.run_id))
-        b.addWidget(self.editor)
+        self._body_layout = QVBoxLayout(self.body)
+        self._body_layout.setContentsMargins(12, 8, 12, 10)
         v.addWidget(self.body)
         self.set_expanded(expanded)
 
     @property
     def expanded(self):
-        return self.body.isVisible()
+        return self._expanded
 
     def toggle(self):
         self.set_expanded(not self.expanded)
         self.toggled.emit(self)
 
     def set_expanded(self, on):
+        if on and self.editor is None:
+            self.editor = RunEditor(self.store, self.index, self.run)
+            self.editor.changed.connect(self._save)
+            self.editor.delete_requested.connect(lambda: self.delete_requested.emit(self.run_id))
+            self._body_layout.addWidget(self.editor)
+        self._expanded = on
         self.body.setVisible(on)
         self.head.setMinimumHeight(0 if on else 104)
         self._render_summary()
 
+    def _payload(self):
+        """The run as it is now: from its editor once it has one, else as it was saved."""
+        if self.editor is not None:
+            return self.editor.payload()
+        run = self.run
+        mode = run.get("mode") or MODES[0][0]
+        return {"run_date": run.get("run_date") or date.today().isoformat(), "mode": mode,
+                "damage": run.get("damage"), "notes": run.get("notes") or "", "team": run.get("team") or [],
+                "team_name": run.get("team_name") or "", "dps": (run.get("damage") or 0) / DIVISORS[mode]}
+
     def _render_summary(self):
-        d = self.editor.payload()
+        d = self._payload()
         self.arrow.setText("▾" if self.expanded else "▸")
         damage = f"{_millions(d['damage'])} DMG" if d["damage"] else "No damage entered"
         name = (d.get("team_name") or "").strip()
@@ -600,7 +637,7 @@ class RunItem(QFrame):
         )
         clear_layout(self.portraits)
         for member in d["team"] if not self.expanded else ():  # open: the team is in the editor below
-            info = self.editor._info(member["char_id"])
+            info = _lookup(self.index, member["char_id"])
             if info:
                 self.portraits.addWidget(self._member_cell(member, info))
         self.best_badge.setText(f"★ HIGHEST\n{self._mode_name}" if self._dense else f"★ HIGHEST · {self._mode_name}")
@@ -621,11 +658,16 @@ class RunItem(QFrame):
     def _fit_width(self):
         """Narrow row (a small window): the team cells drop their weapon / artifact icons (still in the
         tooltip) and the mark goes on two lines, so nothing is cut off; notes show when there's room."""
-        dense = self.head.width() < ROW_FULL_WIDTH
+        dense = self._room() < ROW_FULL_WIDTH
         if dense != self._dense:
             self._dense = dense
             self._render_summary()
         self.notes.setText(getattr(self, "_notes", "") if self.notes.width() >= 70 else "")
+
+    def _room(self):
+        """The width the row has on screen: the page's visible width (the row's own width can't tell, since a
+        row too wide for it would widen the page instead of going dense)."""
+        return visible_room(self, self.head.width())
 
     def _member_cell(self, member, info):
         """A teammate in the summary: portrait, with their weapon and artifact set beside it."""
@@ -662,7 +704,10 @@ class RunItem(QFrame):
         else:
             for i in range(gear.count()):
                 gear.itemAt(i).widget().deleteLater()
-        levels = QVBoxLayout()
+        levels_box = QWidget()
+        levels_box.setFixedWidth(LEVELS_COLUMN)
+        levels = QVBoxLayout(levels_box)
+        levels.setContentsMargins(0, 0, 0, 0)
         levels.setSpacing(0)
         cons = QLabel(f"C{member.get('constellation') or 0}")
         cons.setObjectName("MemberCons")
@@ -673,7 +718,7 @@ class RunItem(QFrame):
         levels.addWidget(talents)
         levels.addStretch()
         row.addSpacing(2)
-        row.addLayout(levels)
+        row.addWidget(levels_box)
         cell.setToolTip(f"{info.name}  C{member.get('constellation') or 0}"
                         + (f"\n{weapon.name}  R{member.get('refinement') or 1}" if weapon else "")
                         + (f"\n{'  +  '.join(a.name for a in sets)}" if sets else ""))
@@ -800,7 +845,7 @@ class LogPage(QWidget):
 
     def _render_hero_actions(self):
         clear_layout(self.hero.actions)
-        home = QPushButton("←  Home")
+        home = QPushButton("←  DPS Log")
         home.clicked.connect(self.back_home)
         guide = QPushButton("Character page")
         guide.clicked.connect(lambda: self.open_guide.emit(str(self.info.id)))
@@ -878,11 +923,14 @@ class LogPage(QWidget):
         self._best_ids = self._bests()
         order = list(self._best_ids.values())
         runs.sort(key=lambda r: order.index(r["id"]) if r["id"] in order else len(order))
+        # narrow or not, worked out once here, so the rows aren't drawn wide and then again narrow
+        kicker_room = visible_room(self._runs_kicker, ROW_FULL_WIDTH)
+        dense = kicker_room < ROW_FULL_WIDTH
         for run in runs:
             if not run["team"]:  # DPS logged before the character log existed: no team saved
                 run["team"] = [_member(self.info, record)]
             best = run["id"] in order
-            item = RunItem(self.store, self.index, run, best=best, expanded=run["id"] in keep_open)
+            item = RunItem(self.store, self.index, run, best=best, expanded=run["id"] in keep_open, dense=dense)
             item.saved.connect(self._run_saved)
             item.delete_requested.connect(self._delete_run)
             item.toggled.connect(self._run_toggled)
@@ -906,13 +954,6 @@ class LogPage(QWidget):
                 if other is not item:
                     other.set_expanded(False)
         self._update_focus()
-
-    def _leave_focus(self):
-        """Close whatever run is open (or the new one)."""
-        if self.new_editor is not None:
-            self._close_new_run()
-        for item in self._items():
-            item.set_expanded(False)
 
     def _update_focus(self):
         """The page stays as it is (banner, every run); a run that's open, or the new one, is scrolled

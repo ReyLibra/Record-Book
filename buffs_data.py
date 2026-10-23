@@ -43,11 +43,11 @@ WHO = {
 ELEMENT_TAGS = {
     "pyro": "PYRO",
     "hydro": "HYDRO",
-    "electro": "ELECTRO",
-    "cryo": "CRYO",
-    "anemo": "ANEMO",
-    "geo": "GEO",
     "dendro": "DENDRO",
+    "electro": "ELECTRO",
+    "anemo": "ANEMO",
+    "cryo": "CRYO",
+    "geo": "GEO",
     "phys": None,
 }
 

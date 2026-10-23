@@ -41,11 +41,10 @@ if __name__ == "__main__":  # (when imported, e.g. by a test, the caller sets th
     theme.load(DB_PATH)
 _LAUNCH = [os.path.abspath(sys.argv[0])] + sys.argv[1:]  # to start again after changing the look
 
-from PySide6.QtCore import QEvent, QMimeData, QObject, QProcess, QSize, Qt, Signal
-from PySide6.QtGui import QDrag
+from PySide6.QtCore import QEvent, QMimeData, QObject, QProcess, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QDrag
 from PySide6.QtWidgets import (
     QApplication,
-    QBoxLayout,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -65,15 +64,26 @@ import buff_scan
 import buffs_page
 import weapon_sources
 from buffs_page import BuffsPage
+import servers
 from character_page import CharacterPage
 from database_pages import BrowsePage
+from dps_log_page import DpsLogPage
+from endgame_page import EndGamePage
 from home_page import HomePage
 from log_page import LogPage
 from settings_dialog import SettingsDialog
 from store import Store
-from widgets import ACCENT, BAR_BORDER, ICON_SIZE, STYLESHEET, SmoothScroller, filter_button, shape_icon
+from tier_list_page import TierListPage
+from todo_page import TodoPage
+from widgets import BAR_BORDER, ICON_SIZE, STYLESHEET, SelectableText, SmoothScroller, shape_icon
 
 PIN_MIME = "application/x-recordbook-pin"
+LINKS = [
+    ("Keqing Mains (KQM)", "https://keqingmains.com", "Theorycrafting guides and calcs"),
+    ("Project Amber", "https://gi.yatta.moe", "Game data: characters, weapons, artifacts"),
+    ("Lunaris", "https://lunaris.moe", "Upcoming and unreleased content"),
+    ("stygian.moe", "https://stygian.moe", "Stygian Onslaught"),
+]
 NAV_ICON = theme.color("#d8d9db")
 MAX_RECENT_SHOWN = 3
 
@@ -118,7 +128,8 @@ class NavPanel(QFrame):
         self.rule.setStyleSheet(f"color: {BAR_BORDER};")
 
         entries = [(0, "house", "Home"), "DATABASE", (1, "circle", "Characters"), (2, "square", "Weapons"),
-                   (3, "triangle", "Artifacts"), "TOOLS", (5, "buff", "Buffs")]
+                   (3, "triangle", "Artifacts"), (9, "crown", "End Game"), "TOOLS", (7, "chart", "DPS Log"),
+                   (5, "buff", "Buff/Shred List"), (6, "tiers", "Tier List Maker"), (8, "todo", "To Do List")]
         for entry in entries:
             if isinstance(entry, str):
                 if not self.sections:
@@ -142,6 +153,27 @@ class NavPanel(QFrame):
             self.buttons.append(btn)
             layout.addWidget(btn)
         layout.addStretch()
+        # links to other Genshin sites, under a heading that opens and closes them (closed to start)
+        self.links_toggle = QPushButton()
+        self.links_toggle.setObjectName("NavLinks")
+        self.links_toggle.setCursor(Qt.PointingHandCursor)
+        self.links_toggle.setToolTip("Links to other Genshin sites")
+        self.links_toggle.clicked.connect(lambda: self._show_links(not self.links.isVisible()))
+        layout.addWidget(self.links_toggle)
+        self.links = QWidget()
+        links = QVBoxLayout(self.links)
+        links.setContentsMargins(0, 0, 0, 4)
+        links.setSpacing(0)
+        for name, url, tip in LINKS:
+            btn = QPushButton(f"{name}  ↗")
+            btn.setObjectName("NavLink")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(f"{tip}\n{url}")
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.clicked.connect(lambda _=False, url=url: QDesktopServices.openUrl(QUrl(url)))
+            links.addWidget(btn)
+        layout.addWidget(self.links)
+        self._show_links(False)
         # the settings popup: look, Traveler, unreleased content, launch, Update data
         self.settings_button = QPushButton(shape_icon("gear", NAV_ICON), "Settings")
         self.settings_button.setIconSize(ICON_SIZE)
@@ -162,12 +194,20 @@ class NavPanel(QFrame):
     def set_current(self, index):
         self.group.button(index).setChecked(True)
 
+    def _show_links(self, shown):
+        self.links.setVisible(shown and not self.collapsed)
+        arrow = "▾" if shown else "▸"
+        self.links_toggle.setText(f"LINKS  {arrow}")
+        self._links_open = shown
+
     def set_collapsed(self, collapsed):
         self.collapsed = collapsed
         for btn in self.buttons + [self.settings_button]:
             btn.setText("" if collapsed else btn.property("label"))
         for section in self.sections:
             section.setVisible(not collapsed)
+        self.links_toggle.setVisible(not collapsed)
+        self._show_links(self._links_open)
 
 
 # ---------- header: title, pinned and recent characters ----------
@@ -381,10 +421,14 @@ class Footer(QFrame):
 # ---------- main window ----------
 class MainWindow(QMainWindow):
     updating = Signal(bool)  # Update data started / finished (the Settings popup's button follows it)
+    index_ready = Signal(bool)  # the game data arrived (False: it couldn't be loaded); the loading screen waits for it
 
     def __init__(self, store):
         super().__init__()
         self.store = store
+        # the game data loads in the background while the pages are built (it's handed to them when it arrives,
+        # once the window is finished)
+        gamedata.run_async(gamedata.fetch_index, self.index_loaded)
         self.setWindowTitle(f"{APP_NAME} {VERSION}")
         self.setWindowIcon(shape_icon("book", theme.accent_hex(), 64))
         self.resize(1440, 860)
@@ -400,14 +444,22 @@ class MainWindow(QMainWindow):
         self.nav = NavPanel()
         self.header = Header(store)
         self.footer = Footer()
-        self.home = HomePage(store)
+        self.server = store.get_setting("server", servers.DEFAULT)
+        self.home = HomePage(store, self.server)
+        self.dps_log = DpsLogPage(store)
+        self.todo = TodoPage(store)
+        self.endgame = EndGamePage(store)
         self.pages = [
             self.home,
             CharacterPage(store),
             BrowsePage("weapon", store),
             BrowsePage("artifact", store),
-            LogPage(store),  # not in the nav: opened from a character's name on Home
+            LogPage(store),  # not in the nav: opened from a character's name on the DPS Log
             BuffsPage(store),
+            TierListPage(store),
+            self.dps_log,
+            self.todo,
+            self.endgame,
         ]
         self.log_page = self.pages[4]
         self.pages[5].open_character.connect(self.open_guide)
@@ -435,14 +487,23 @@ class MainWindow(QMainWindow):
         self.header.open_character.connect(self.open_from_header)
         # "Recently visited" is the log pages (where runs are recorded), so only open_log() adds to it
         self.home.message.connect(self.footer.status.setText)
-        self.home.roster_changed.connect(self.roster_changed)
-        self.home.removed.connect(self.header.forget)
-        self.home.open_log.connect(self.open_log)
-        self.log_page.back_home.connect(lambda: self.go(0))
+        self.dps_log.roster_changed.connect(self.roster_changed)
+        self.dps_log.removed.connect(self.header.forget)
+        self.dps_log.open_log.connect(self.open_log)
+        self.dps_log.selector.mode_changed.connect(lambda _mode: self.home.refresh())
+        self.log_page.back_home.connect(lambda: self.go(7))
         self.log_page.open_guide.connect(self.open_guide)
         self.log_page.changed.connect(self._log_changed)
-        self.home.banners.open_character.connect(self.open_guide)
-        self.home.banners.open_weapon.connect(self.open_weapon)
+        self.home.open_log.connect(self.open_log)
+        self.home.open_character.connect(self.open_guide)
+        self.home.open_weapon.connect(self.open_weapon)
+        self.home.add_requested.connect(self._add_on_dps_log)
+        self.home.open_todo.connect(lambda: self.go(8))
+        self.home.open_endgame.connect(self._open_endgame)
+        self.home.server_picked.connect(self.set_server)
+        self.endgame.server_changed.connect(self.set_server)
+        self.endgame.loaded.connect(lambda: self.home.set_timers(self.endgame.timers()))
+        self.todo.changed.connect(self._todo_changed)
         characters_page = self.pages[1]
         # (browsing the database's character pages isn't a visit: "Recently visited" is for logged characters)
         characters_page.add_requested.connect(self.add_from_database)
@@ -453,11 +514,11 @@ class MainWindow(QMainWindow):
 
         self.roster_changed()
         self.footer.status.setText("Loading game data…")
-        gamedata.run_async(gamedata.fetch_index, self.index_loaded)
 
     def index_loaded(self, index, error):
         if error:
             self.footer.status.setText(f"Couldn't load game data (check your internet connection): {error}")
+            self.index_ready.emit(False)
             return
         self.full_index = index
         self._show_index()
@@ -468,6 +529,7 @@ class MainWindow(QMainWindow):
         # the Buffs page comes from the kits: read them all the first time (or after the scanner changed)
         self._scan_buffs(self.full_index, everything=not self.pages[5].scan_is_current())
         self._refresh_sources()
+        self.index_ready.emit(True)
 
     def _refresh_sources(self, force=False):
         """Read the weapons' sources (event, wish, crafting…) from the wiki again in the background, when the
@@ -491,8 +553,12 @@ class MainWindow(QMainWindow):
         logged = {r["char_id"] for r in self.store.characters()}
         self.index = gamedata.for_traveler(self.full_index, self.traveler, keep=logged,
                                            show_unreleased=self.show_unreleased)
+        tiers = self.pages[6]  # the Tier List Maker can add the other twin's pictures
+        tiers.full_index, tiers.traveler = self.full_index, self.traveler
+        self.endgame.set_full_index(self.full_index)  # its line-ups can show unreleased characters
         for page in self.pages:
             page.set_index(self.index)
+        self._todo_changed()
 
     def open_settings(self):
         SettingsDialog(self).exec()
@@ -527,6 +593,7 @@ class MainWindow(QMainWindow):
             return
         self.show_unreleased = show
         self.store.set_setting("show_unreleased", show)
+        self.endgame.set_unreleased(show)  # upcoming Abyss / Stygian / Theater entries
         if getattr(self, "full_index", None):
             self._show_index()
             self.pages[5].reload()
@@ -618,7 +685,7 @@ class MainWindow(QMainWindow):
         if index == 1:  # entering Characters always starts at the all-characters grid
             self.pages[1].show_grid()
         self.stack.setCurrentIndex(index)
-        self.nav.set_current(0 if index == 4 else index)  # the character log belongs to Home
+        self.nav.set_current(7 if index == 4 else index)  # the character log belongs to the DPS Log
         crumbs = getattr(QApplication.instance(), "breadcrumbs", None)
         if crumbs:
             crumbs.note(f"page   {type(self.pages[index]).__name__}")
@@ -629,9 +696,32 @@ class MainWindow(QMainWindow):
         self.visit(char_id)
 
     def _log_changed(self):
-        self.home.reload_roster()
-        self.home.refresh_card()
+        self.dps_log.reload_roster()
+        self.dps_log.refresh_card()
+        self.home.refresh()
         self.roster_changed()
+
+    def _todo_changed(self):
+        self.home.set_tasks(self.todo.top_tasks(20), self.todo.weekday())  # (Home shows as many as fit)
+
+    def _open_endgame(self, mode):
+        self.endgame.set_mode(mode)
+        self.go(9)
+
+    def _add_on_dps_log(self, element):
+        """Home's "Log a character" for an element with nobody logged: the DPS Log's add popup."""
+        self.go(7)
+        self.dps_log._on_add(element)
+
+    def set_server(self, server):
+        """The server whose clock the End Game timers, schedules and domain days follow (Home and End Game)."""
+        self.server = server
+        self.store.set_setting("server", server)
+        self.home.set_server(server)
+        self.todo.set_server(server)
+        self.endgame.set_server(server)
+        self.home.set_timers(self.endgame.timers())
+        self._todo_changed()
 
     def toggle_nav(self):
         self.nav.set_collapsed(not self.nav.collapsed)
@@ -676,15 +766,15 @@ class MainWindow(QMainWindow):
 
     def open_character(self, char_id):
         if self.store.character(char_id):
-            self.go(0)
-            self.home.select(char_id)
+            self.go(7)
+            self.dps_log.select(char_id)
         else:
             self.go(1)
             self.pages[1].show_item(char_id)
 
     def add_from_database(self, char_id):
-        self.go(0)
-        self.home.start_add(char_id)
+        self.go(7)
+        self.dps_log.start_add(char_id)
 
     def roster_changed(self):
         n = len(self.store.characters())
@@ -698,7 +788,6 @@ def _log_crashes():
     import faulthandler
     import traceback
     from datetime import datetime
-    from pathlib import Path
 
     path = APP_DIR / "crash.log"
     try:  # keep the file small: only the most recent lines
@@ -758,6 +847,25 @@ class _Breadcrumbs(QObject):
         return False
 
 
+def _collect_garbage_on_main_thread(app):
+    """Python's garbage collector runs in whichever thread happens to allocate when it's due, and when that's a
+    download thread it can free Qt objects (pictures, widgets left in reference cycles) off the main thread, which
+    crashes Qt. So it's turned off and run here instead, on the main thread, whenever it would have been due."""
+    import gc
+
+    gc.disable()
+
+    def collect():
+        count, threshold = gc.get_count(), gc.get_threshold()
+        if count[0] > threshold[0]:
+            gc.collect(2 if count[2] > threshold[2] else 1 if count[1] > threshold[1] else 0)
+
+    timer = QTimer(app, interval=250)
+    timer.timeout.connect(collect)
+    timer.start()
+    return timer
+
+
 def _listen_for_new_copies(app):
     """Bring this copy's window to the front whenever Record Book is started again. Listens from the
     moment the app starts, so a second launch during loading is caught too; app.main_window is set once
@@ -794,18 +902,24 @@ def main():
     app = QApplication(sys.argv)
     app.instance_server = _listen_for_new_copies(app)  # kept for the app's lifetime
     _crash_log = _log_crashes()  # keep the file open for the app's lifetime
+    app.gc_timer = _collect_garbage_on_main_thread(app)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(VERSION)
     app.setStyleSheet(theme.css(STYLESHEET))
     theme.install(app)
     scroller = SmoothScroller(app)
     app.installEventFilter(scroller)
+    app.installEventFilter(SelectableText(app))  # text anywhere can be highlighted and copied
     breadcrumbs = _Breadcrumbs(_crash_log, app)
     app.installEventFilter(breadcrumbs)
     app.breadcrumbs = breadcrumbs  # MainWindow.go() notes page changes through this
-    window = MainWindow(Store())
-    window.show()
-    app.main_window = window
+    # a loading screen while the window is built and everything it shows is loaded; the window appears
+    # once it's all ready
+    from loading_screen import Preloader
+
+    preloader = Preloader(lambda: MainWindow(Store()))
+    preloader.finished.connect(lambda: setattr(app, "main_window", preloader.window))
+    QTimer.singleShot(0, preloader.start)
     sys.exit(app.exec())
 
 

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import buff_totals
 import gamedata
 import buff_scan
 from buffs_data import ELEMENT_TAGS, FLAGS, LEGEND, TYPES, WHO, source_kind
@@ -62,6 +63,8 @@ CARD_STYLE = "\n".join(
         "QLabel#BuffName { font-size: 12pt; font-weight: 700; }",
         f"QLabel#BuffSub {{ color: {MUTED}; font-size: 9pt; }}",
         "QLabel#BuffKinds { font-size: 8pt; font-weight: 700; }",
+        "QFrame#BuffDivider { background: #373a43; border: none; }",
+        "QLabel#BuffTotal { color: #d6d9df; font-size: 9pt; }",
         f"QLabel#BuffNote {{ color: {MUTED}; font-size: 8.5pt; font-style: italic; }}",
         "QLabel#BuffChip { padding: 2px 0; font-size: 8.5pt; font-weight: 800; }",
         "QLabel#BuffWho { padding: 2px 0; font-size: 8pt; font-weight: 800; }",
@@ -135,6 +138,7 @@ class _Buff:
     def __init__(self, source, tags, who, text, condition="", flag=""):
         self.source = source
         self.text = text
+        self.tags = tags
         self.who = who
         self.condition = condition
         self.flag = flag if flag in FLAGS else ""
@@ -169,8 +173,13 @@ def source_order(source):
 def _set_shown(widget, shown):
     """setVisible only when it changes: each call re-applies the style sheet, and with ~2,000 widgets on
     the page that alone took seconds. The wanted state is kept on the widget: Qt counts a widget that was
-    never shown as hidden, so isHidden() can't tell "hide this" apart from "not on screen yet"."""
+    never shown as hidden, so isHidden() can't tell "hide this" apart from "not on screen yet".
+    A widget that was never shown or hidden on purpose already appears with its parent, so showing it needs
+    no call at all (that skipped call was most of the time building the page)."""
     if _is_shown(widget) != shown or not hasattr(widget, "_wanted_shown"):
+        if shown and not widget.testAttribute(Qt.WA_WState_ExplicitShowHide):
+            widget._wanted_shown = True
+            return
         widget.setHidden(not shown)
         widget._wanted_shown = shown
 
@@ -222,7 +231,6 @@ class BuffLine(QWidget):
             self.meta = line
 
         who_label, who_tip = WHO[buff.who]
-        color = WHO_COLORS[buff.who]
         who = QLabel(who_label.upper())
         who.setAlignment(Qt.AlignCenter)
         who.setFixedWidth(118)
@@ -302,9 +310,10 @@ class CharacterBuffs(QFrame):
 
     open_character = Signal(str)
 
-    def __init__(self, info, note, buffs, terms=None):
+    def __init__(self, info, note, buffs, terms=None, stacking=()):
         super().__init__()
         self.info = info
+        self.stacking = stacking
         self.setObjectName("Card")
         self._portrait_pm = None
         self._logged = None
@@ -346,6 +355,17 @@ class CharacterBuffs(QFrame):
         left.addWidget(sub)
         left.addSpacing(4)
         left.addWidget(kinds_label)
+        # a divider, then what the shown buffs add up to (at C0, or C6 with the Cons toggle on): under the
+        # portrait, across the whole column
+        self._divider = QFrame()
+        self._divider.setObjectName("BuffDivider")
+        self._divider.setFixedHeight(1)
+        self._total_label = QLabel()
+        self._total_label.setObjectName("BuffTotal")
+        self._total_label.setTextFormat(Qt.RichText)
+        self._total_label.setWordWrap(True)
+        self._total_label.setToolTip("What these buffs add up to (read from their text; each line says exactly what it does)")
+
         if note:
             note_label = QLabel(note)
             note_label.setWordWrap(True)
@@ -355,7 +375,13 @@ class CharacterBuffs(QFrame):
         side.addLayout(left, 1)
         holder = QWidget()
         holder.setFixedWidth(LEFT_WIDTH)
-        holder.setLayout(side)
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+        column.addLayout(side)
+        column.addWidget(self._divider)
+        column.addWidget(self._total_label)
+        column.addStretch()
         layout.addWidget(holder)
         self._holder = holder
 
@@ -374,6 +400,10 @@ class CharacterBuffs(QFrame):
         layout.addLayout(lines, 1)
 
         gamedata.load_pixmap(info.icon, self._portrait_loaded)
+        # the text can be highlighted and copied (links and tooltips keep working)
+        for label in self.findChildren(QLabel):
+            if label is not self.portrait:
+                label.setTextInteractionFlags(label.textInteractionFlags() | Qt.TextSelectableByMouse)
 
     def _set_kinds(self, buffs):
         """Tags for the kinds of buff in buffs, in the filter buttons' order."""
@@ -397,8 +427,19 @@ class CharacterBuffs(QFrame):
         pm.setDevicePixelRatio(2)
         self.portrait.setPixmap(pm)
 
-    def apply(self, test):
-        """Show only the rows passing test(buff); returns how many are shown."""
+    def _set_total(self, buffs, level):
+        lines = buff_totals.totals(buffs, self.stacking, self.info.name)
+        _set_shown(self._divider, bool(lines))
+        _set_shown(self._total_label, bool(lines))
+        if lines:
+            self._total_label.setText(
+                f"<span style='color:#8c909b; font-size:8pt; font-weight:900'>TOTAL · {level}</span><br>"
+                + "<br>".join(re.sub(r"^([^:\s]+):", r"<b>\1:</b>", html.escape(line)) for line in lines))
+            self._total_label.setFixedHeight(_text_height(self._total_label, LEFT_WIDTH))
+
+    def apply(self, test, level="C0"):
+        """Show only the rows passing test(buff); returns how many are shown. level: "C0" or "C6", for
+        the total under the portrait."""
         shown = 0
         for r in self.rows:
             row_shown = 0
@@ -409,7 +450,9 @@ class CharacterBuffs(QFrame):
             _set_shown(r, row_shown > 0)
             r.update_badges()
             shown += row_shown
-        self._set_kinds([line.buff for r in self.rows for line in r.lines if _is_shown(line)])
+        shown_buffs = [line.buff for r in self.rows for line in r.lines if _is_shown(line)]
+        self._set_kinds(shown_buffs)
+        self._set_total(shown_buffs, level)
         _set_shown(self, shown > 0)
         self._fit()
         return shown
@@ -458,6 +501,20 @@ class CharacterBuffs(QFrame):
         self._fit()
 
 
+def _text_height(label, width):
+    """The height a word-wrapped rich-text label really needs at a width, laid out the way it's drawn (its
+    own heightForWidth can come up short with display scaling, and the last lines got cut off)."""
+    from PySide6.QtGui import QTextDocument
+
+    label.ensurePolished()  # its font from the page's style sheet
+    doc = QTextDocument()
+    doc.setDefaultFont(label.font())
+    doc.setDocumentMargin(0)
+    doc.setHtml(label.text())
+    doc.setTextWidth(width)
+    return int(doc.size().height()) + label.fontMetrics().descent() + 2
+
+
 def _kicker(text):
     label = QLabel(text)
     label.setObjectName("FieldLabel")
@@ -468,6 +525,7 @@ def _kicker(text):
 class BuffsPage(QWidget):
     message = Signal(str)
     open_character = Signal(str)
+    built = Signal()  # every card is built
 
     def __init__(self, store):
         super().__init__()
@@ -602,12 +660,12 @@ class BuffsPage(QWidget):
         """Whether the saved kit readings come from this version of the scanner."""
         return self.store.get_setting(SCAN_KEY) == buff_scan.VERSION
 
-    def reload(self):
-        """Rebuild every card from the saved kit readings. Off screen it only notes that it's due: the
-        cards are built when the page is first opened, so they don't slow the app's start."""
+    def reload(self, force=False):
+        """Rebuild every card from the saved kit readings. Off screen it only notes that it's due (the cards
+        are built when the page is opened), unless force: the loading screen builds them before the app shows."""
         if not self.index:
             return
-        if not self.isVisible():
+        if not self.isVisible() and not force:
             self._stale = True
             return
         self._stale = False
@@ -627,7 +685,7 @@ class BuffsPage(QWidget):
             if name.startswith("Aether ("):
                 info = by_name.get(name) or by_name.get("Lumine" + name[len("Aether"):])
             if info:
-                pending.append((info, data["entries"], data.get("terms") or {}))
+                pending.append((info, data["entries"], data.get("terms") or {}, data.get("stacks") or []))
         # build the cards a few at a time, in the order they'll be shown: the first ones appear at once and
         # the window keeps responding while the rest are added (all at once froze it for seconds)
         key = self._sort_key()
@@ -635,44 +693,73 @@ class BuffsPage(QWidget):
             pending.sort(key=lambda p: key(p[0]))
         self._pending = pending
         self._generation = getattr(self, "_generation", 0) + 1
-        # the list stays hidden until every card is built, so it doesn't grow and jump while loading
-        self._show_message("Loading buffs…" if pending else "Reading every character's kit for buffs… (only the first time)")
+        # the list stays hidden until every card is built, so it doesn't grow and jump while loading; behind the
+        # loading screen it's up from the start instead, so each card is styled and laid out once, as it's added
+        # (revealing ~2,000 widgets at the end took seconds)
+        if not getattr(self, "_preloading", False):
+            self._show_message("Loading buffs…" if pending else "Reading every character's kit for buffs… (only the first time)")
         self._build_more(self._generation)
 
     BATCH = 6  # cards built per pass of the event loop
+    PRELOAD_BATCH = 20  # (behind the loading screen, where nothing else needs the time)
 
     def _build_more(self, generation):
         if generation != self._generation:  # a newer reload took over
             return
         logged = {r["char_id"] for r in self.store.characters()}
-        batch, self._pending = self._pending[:self.BATCH], self._pending[self.BATCH:]
-        for info, entries, terms in batch:
-            card = self._add_card(info, entries, terms)
-            card.set_logged(info.id in logged)
-            self._shown[card] = card.apply(self._test_for(card))
+        size = self.PRELOAD_BATCH if getattr(self, "_preloading", False) else self.BATCH
+        batch, self._pending = self._pending[:size], self._pending[size:]
+        for info, entries, terms, stacking in batch:
+            card = self._add_card(info, entries, terms, stacking)
+            card.set_logged(info.id in logged)  # (the filters are applied to every card at the end, once)
         if self._pending:
             self._show_count()
             QTimer.singleShot(0, lambda: self._build_more(generation))
         else:
             self.apply_filter()  # shows the list (or "No buffs match…") now that every card is built
             self._sort()
+            self._preloading = False
+            self.built.emit()
 
-    def _add_card(self, info, entries, terms):
+    def preload(self):
+        """Build the cards now, behind the loading screen (which waits for built)."""
+        if self.cards and not getattr(self, "_stale", False):
+            self._preloading = False
+            self.built.emit()
+        else:
+            self._preloading = True
+            self.reload(force=True)
+
+    def start_preload(self):
+        """The loading screen is about to put this page on top for a moment (unseen), so the list gets its real
+        width: showing it mustn't start a build of its own. The cards are then built hidden at that width
+        (built on screen, each one was styled as it appeared, which cost far more)."""
+        self._preloading = True
+        self.area.setCurrentWidget(self.scroll)
+
+    def _card_width(self):
+        """The width the list gives a card (known once the page has been on screen, even if it's hidden now)."""
+        margins = self.list.contentsMargins()
+        return self.scroll.viewport().width() - margins.left() - margins.right()
+
+    def _add_card(self, info, entries, terms, stacking=()):
         # register the kit terms the entries mention, so hovering them explains what they are
         keys = {}
         for n, (term, (explanation, source)) in enumerate(sorted(terms.items())):
             key = f"kit{info.id}_{n}"
             gamedata.GLOSSARY[key] = (term, explanation, f"From {source}")
             keys[term] = key
-        card = CharacterBuffs(info, "", [_Buff(*e) for e in entries], keys)
+        card = CharacterBuffs(info, "", [_Buff(*e) for e in entries], keys, [tuple(x) for x in stacking])
         card.open_character.connect(self.open_character)
         self.cards.append(card)
         self.list.insertWidget(self.list.count() - 1, card)
+        if getattr(self, "_preloading", False) and self._card_width() > 100:
+            card.resize(self._card_width(), card.height())  # (hidden, the list doesn't size it yet)
         return card
 
     def showEvent(self, event):
         super().showEvent(event)
-        if getattr(self, "_stale", False):
+        if getattr(self, "_stale", False) and not getattr(self, "_preloading", False):
             self.reload()
         self._refresh_logged()
 
@@ -706,9 +793,20 @@ class BuffsPage(QWidget):
 
         return test
 
+    def _level_for(self, card):
+        """The investment the card's total is at: C6 when that rarity's Cons toggle is on, else C0."""
+        button = self.five_cons_button if card.info.rarity >= 5 else self.four_cons_button
+        return "C6" if button.isChecked() else "C0"
+
     def apply_filter(self):
-        for card in self.cards:
-            self._shown[card] = card.apply(self._test_for(card))
+        # the list is laid out once at the end, not again after every card's new height
+        self.list.setEnabled(False)
+        try:
+            for card in self.cards:
+                self._shown[card] = card.apply(self._test_for(card), self._level_for(card))
+        finally:
+            self.list.setEnabled(True)
+            self.list.activate()
         self._show_count()
         if self.sort_box.currentData() == "count":
             self._sort()

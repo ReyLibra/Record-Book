@@ -22,6 +22,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
+    QRadialGradient,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -129,6 +130,43 @@ class SmoothScroller(QObject):
         anim.start()
         self._animations[bar] = (anim, target)
         return True
+
+
+class SelectableText(QObject):
+    """App-wide: any label with text can be highlighted and copied (links keep working). Labels that are
+    clicked themselves (rows, chips, tiles) are left alone, so clicking them still works.
+    Install once with app.installEventFilter(SelectableText(app))."""
+
+    def eventFilter(self, obj, event):
+        # (also on Show: many labels get their text after they're made)
+        if event.type() in (QEvent.Type.Polish, QEvent.Type.Show) and isinstance(obj, QLabel) and obj.text():
+            from PySide6.QtWidgets import QAbstractButton
+
+            if (obj.testAttribute(Qt.WA_TransparentForMouseEvents)
+                    or "mousePressEvent" in vars(obj)  # given its own click (Home's showcase name)
+                    or type(obj).mousePressEvent is not QLabel.mousePressEvent
+                    or obj.window().windowType() == Qt.ToolTip
+                    or isinstance(obj.parent(), QAbstractButton)
+                    or _in_clickable(obj)):
+                return False
+            flags = obj.textInteractionFlags()
+            if not flags & Qt.TextSelectableByMouse:
+                obj.setTextInteractionFlags(flags | Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+        return False
+
+
+def _in_clickable(widget):
+    """Whether a widget sits in one of Record Book's own clickable rows or cards (a class of ours that
+    handles the mouse itself): selectable text there would take the click."""
+    parent = widget.parentWidget()
+    while parent is not None:
+        for cls in type(parent).__mro__:
+            if cls.__module__.startswith("PySide6"):
+                break
+            if "mousePressEvent" in vars(cls) or "mouseReleaseEvent" in vars(cls):
+                return True
+        parent = parent.parentWidget()
+    return False
 
 
 def clear_layout(layout):
@@ -255,9 +293,130 @@ QMainWindow, #Root {{ background: {PAGE_BG}; }}
 #ElementColumn #AddRow {{ padding: 4px 6px; font-size: 9pt; }}
 #ElementColumn #AddRow {{ background: transparent; border: none; }}
 #LinkBtn {{ text-align: left; padding: 6px 12px; }}
+#NavPanel QPushButton#NavLinks {{ color: {MUTED}; font-size: 8.5pt; padding: 8px 14px 4px 14px; letter-spacing: 0.5px; }}
+#NavPanel QPushButton#NavLinks:hover {{ color: {ACCENT}; }}
+#NavPanel QPushButton#NavLink {{ font-size: 9.5pt; padding: 6px 14px 6px 22px; color: rgba(255,255,255,0.7); }}
+/* the loading screen */
+#LoadingPanel {{ background: {BAR_BG}; border: 1px solid {PANEL_BORDER}; border-radius: 10px; }}
+#LoadingTitle {{ font-size: 18pt; font-weight: 800; color: #ffffff; }}
+#LoadingNote {{ color: {MUTED}; font-size: 9pt; }}
+QProgressBar#LoadingBar {{ background: rgba(255,255,255,0.08); border: none; border-radius: 3px; }}
+QProgressBar#LoadingBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
+/* Home */
+#HomePanel {{ background: rgba(28,29,34,0.92); border: 1px solid {PANEL_BORDER}; }}
+#ShowKicker {{ font-size: 8pt; font-weight: 800; letter-spacing: 0.5px; background: transparent; }}
+#ShowName {{ font-size: 28pt; font-weight: 800; color: #ffffff; background: transparent; }}
+#ShowSub {{ font-size: 9pt; color: {MUTED}; background: transparent; }}
+#ShowDps {{ font-size: 32pt; font-weight: 400; color: #ffffff; background: transparent; }}
+#ShowDpsUnit {{ font-size: 10pt; font-weight: 700; color: {ACCENT}; background: transparent; padding-bottom: 8px; }}
+QPushButton#ShowLink {{ background: transparent; border: none; color: {ACCENT}; font-weight: 700; font-size: 9pt; padding: 0; }}
+QPushButton#ShowLink:hover {{ color: #ffffff; }}
+#HomeCard {{ background: rgba(28,29,35,0.95); border: 1px solid #30323c; border-radius: 10px; }}
+#HomeGlyph {{ color: {ACCENT}; font-size: 11pt; }}
+#HomeTitle {{ font-size: 10.5pt; font-weight: 700; color: #ffffff; }}
+#HomeSub {{ color: {MUTED}; font-size: 8.5pt; }}
+#HomeNote {{ color: {MUTED}; font-size: 8pt; }}
+QPushButton#HomeItem, QFrame#HomeItem {{ background: rgba(12,13,16,0.45); border: 1px solid #30323c; border-radius: 6px;
+                                        text-align: left; padding: 0; }}
+QPushButton#HomeItem:hover {{ border-color: {ACCENT}; background: rgba(0,158,236,0.08); }}
+#HomeItemTitle {{ font-size: 9.5pt; font-weight: 700; color: #ffffff; }}
+#HomeItemSub {{ font-size: 8pt; color: {MUTED}; }}
+#RankCircle {{ background: rgba(0,158,236,0.18); color: {ACCENT}; border-radius: 11px; font-weight: 800; font-size: 8.5pt; }}
+#Pill {{ border-radius: 4px; padding: 1px 7px; font-size: 7.5pt; font-weight: 700; }}
+#Pill[kind="accent"] {{ background: rgba(0,158,236,0.16); color: #6cc6f5; }}
+#Pill[kind="solid"] {{ background: {ACCENT}; color: #ffffff; padding: 2px 7px; }}
+#Pill[kind="green"] {{ background: rgba(61,220,132,0.16); color: #3ddc84; }}
+#Pill[kind="muted"] {{ background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.78); }}
+QPushButton#PillButton {{ background: rgba(0,158,236,0.16); color: #6cc6f5; border: none; border-radius: 4px; padding: 2px 8px;
+                         font-size: 8pt; font-weight: 700; }}
+QPushButton#PillButton:hover {{ background: rgba(0,158,236,0.3); }}
+QComboBox#SmallCombo {{ padding: 2px 8px; font-size: 8.5pt; }}
+QToolButton#ShowDot {{ background: rgba(12,13,16,0.6); border: 1px solid {PANEL_BORDER}; border-radius: 11px; }}
+QToolButton#ShowDot:hover {{ border-color: {ACCENT}; }}
+QToolButton#ShowDot[active="true"] {{ border: 2px solid {ACCENT}; background: rgba(0,158,236,0.2); }}
+QPushButton#SupportRow, QPushButton#TimerRow {{ background: transparent; border: 1px solid transparent; border-radius: 0;
+                                               text-align: left; padding: 0; }}
+QPushButton#SupportRow:hover, QPushButton#TimerRow:hover {{ background: rgba(0,158,236,0.12); border-color: {ACCENT}; }}
+QPushButton#TimerRow {{ background: rgba(12,13,16,0.4); border-color: {PANEL_BORDER}; }}
+QPushButton#SupportCard {{ background: rgba(12,13,16,0.45); border: 1px solid {PANEL_BORDER}; border-radius: 0; padding: 0; }}
+QPushButton#SupportCard:hover {{ border-color: {ACCENT}; background: rgba(0,158,236,0.12); }}
+#SupportName {{ font-size: 8.5pt; font-weight: 600; color: #ffffff; }}
+#SupportTeams {{ font-size: 8pt; font-weight: 700; }}
+#SupportRank {{ color: {MUTED}; font-weight: 800; font-size: 10pt; min-width: 14px; }}
+#TimerValue {{ color: #ffffff; font-weight: 800; font-size: 11.5pt; }}
+#BannerTimer {{ color: {ACCENT}; font-weight: 700; font-size: 9pt; }}
+#BannerTitle {{ font-size: 10.5pt; }}
+QPushButton#CarouselArrow {{ font-size: 13pt; padding: 0 9px 3px 9px; border-radius: 4px; }}
+#TodoHomeRow {{ background: rgba(12,13,16,0.4); border: 1px solid {PANEL_BORDER}; }}
+#DomainOpen {{ color: #3ddc84; font-weight: 700; font-size: 8.5pt; }}
+/* To Do List */
+#TodoCard {{ background: rgba(28,29,34,0.92); border: 1px solid {PANEL_BORDER}; }}
+#TodoName {{ font-size: 13pt; font-weight: 700; }}
+#TodoRank {{ color: {ACCENT}; font-size: 13pt; font-weight: 800; min-width: 26px; }}
+#MatCount {{ font-size: 8pt; font-weight: 700; color: #e5e7ec; }}
+#MatDone {{ font-size: 9pt; font-weight: 800; color: #3ddc84; }}
+#MatCountTopDone {{ font-size: 9pt; font-weight: 900; color: #3ddc84; background: rgba(8,8,10,0.85); padding: 0; }}
+/* the To Do List's inventory popup (the usual popup; amounts in the build popup's style) */
+#InventoryName {{ font-size: 9pt; color: #d6d9df; }}
+QSpinBox#InventoryBox {{ background: rgba(0,0,0,0.28); color: #ffffff; border: 1px solid {BAR_BORDER}; border-radius: 3px;
+                        padding: 3px 2px; font-size: 12pt; font-weight: 700; selection-background-color: rgba(0,158,236,0.45); }}
+QSpinBox#InventoryBox:hover, QSpinBox#InventoryBox:focus {{ border-color: {ACCENT}; }}
+QSpinBox#InventoryBox::up-button, QSpinBox#InventoryBox::down-button {{ width: 0; border: none; }}
+QSpinBox#InventoryBox::up-arrow, QSpinBox#InventoryBox::down-arrow {{ image: none; width: 0; }}
+QSpinBox#InventoryBox QLineEdit {{ color: #ffffff; background: transparent; border: none; padding: 0;
+                                  font-size: 12pt; font-weight: 700; selection-background-color: rgba(0,158,236,0.45); }}
+#MatCountTop {{ font-size: 8.5pt; font-weight: 700; color: #ffffff; background: rgba(8,8,10,0.85); padding: 1px 0; }}
+#NoteText {{ color: #d6d9df; font-size: 10pt; }}
+QPushButton#NotePicture {{ background: transparent; border: 1px solid transparent; padding: 0; }}
+QPushButton#NotePicture:hover {{ border-color: #e05561; }}
+#CraftBadge {{ font-size: 7.5pt; font-weight: 800; color: #ffffff; background: rgba(8,8,10,0.78); padding: 0 3px;
+               border-top-right-radius: 4px; /* fixed */ }}
+#TodoCard #TodoName {{ font-size: 13pt; font-weight: 800; color: #ffffff; background: transparent; /* fixed */ }}
+#TodoBand #TodoRank {{ color: #ffffff; background: transparent; font-size: 11pt; /* fixed */ }}
+#GoalHeading {{ color: #d6d9df; font-size: 9.5pt; font-weight: 800; padding-top: 4px; }}
+#GoalValue {{ color: #ffffff; font-size: 10pt; font-weight: 700; }}
+#GoalArrow {{ color: #8c909b; font-size: 10pt; }}
+#GoalWhat {{ color: #8c909b; font-size: 9pt; }}
+#DomainRow {{ background: rgba(12,13,16,0.4); border: 1px solid {PANEL_BORDER}; }}
+#DomainRow[needed="true"] {{ border-color: #3ddc84; background: rgba(61,220,132,0.08); }}
+/* End Game */
+#EndGameHeader, #EndGameCard {{ background: rgba(28,29,34,0.92); border: 1px solid {PANEL_BORDER}; }}
+#EndGameHeader[live="true"] {{ border: 1px solid #3ddc84; background: rgba(61,220,132,0.07); }}
+#EndGameTitle {{ font-size: 18pt; font-weight: 800; }}
+#StygianName {{ font-size: 12pt; font-weight: 700; }}
+#StygianStats {{ background: rgba(12,13,16,0.6); border: 1px solid {PANEL_BORDER}; }}
+#StygianStat {{ color: #ffffff; font-size: 15pt; font-weight: 800; }}
+#StygianLevel {{ color: #8c909b; font-size: 10pt; font-weight: 800; }}
+#HalfDivider {{ background: {PANEL_BORDER}; border: none; }}
+#EndGameHeading {{ color: #8c909b; font-size: 8pt; font-weight: 900; }}
+#EndGameMuted {{ color: {MUTED}; font-size: 9pt; }}
+#EndGameText {{ color: #e5e7ec; font-size: 9.5pt; }}
+#LiveTag {{ background: rgba(61,220,132,0.16); color: #3ddc84; border: 1px solid #3ddc84; font-weight: 800;
+            font-size: 8pt; padding: 1px 8px; }}
+#TestTag {{ background: rgba(245,166,35,0.14); color: #f5a623; border: 1px solid #f5a623; font-weight: 800;
+            font-size: 8pt; padding: 1px 8px; }}
+QPushButton#EntryRow {{ background: rgba(12,13,16,0.4); border: 1px solid {PANEL_BORDER}; border-radius: 0; text-align: left; }}
+QPushButton#EntryRow:hover {{ border-color: {ACCENT}; }}
+QPushButton#EntryRow[live="true"] {{ border-color: #3ddc84; background: rgba(61,220,132,0.08); }}
+QPushButton#EntryRow[current="true"] {{ background: rgba(0,158,236,0.15); }}
+#MonsterIcon {{ background: rgba(12,13,16,0.6); border: 1px solid {PANEL_BORDER}; }}
 QPushButton#ModeCycle {{ background: rgba(28,29,34,0.92); border: 1px solid {PANEL_BORDER}; padding: 8px 14px;
                         color: {ACCENT}; font-weight: 700; }}
 QPushButton#ModeCycle:hover {{ border-color: {ACCENT}; }}
+/* Tier List Maker */
+#TierCell {{ background: rgba(0,0,0,0.28); }}
+#TierListRow {{ background: rgba(28,29,34,0.92); border: 1px solid {PANEL_BORDER}; }}
+#TierListRow:hover {{ border-color: {ACCENT}; }}
+QPushButton#DeleteRun {{ color: #f75058; }}
+QPushButton#DeleteRun:hover {{ border-color: #f75058; background: rgba(247,80,88,0.12); }}
+#TierPool {{ background: rgba(0,0,0,0.18); border: 1px solid {PANEL_BORDER}; }}
+#TiersBox {{ background: {PANEL_BORDER}; }}
+QLineEdit#TierTitle {{ font-size: 16pt; font-weight: 700; background: transparent; border: 1px solid transparent; }}
+QLineEdit#TierTitle:hover, QLineEdit#TierTitle:focus {{ border-color: {PANEL_BORDER}; }}
+QToolButton#TierArrow {{ background: transparent; border: none; color: rgba(255,255,255,0.6); font-size: 11pt; padding: 0 4px; }}
+QToolButton#TierArrow:hover {{ color: {ACCENT}; }}
+QToolButton#TierArrow:disabled {{ color: rgba(255,255,255,0.15); }}
+#TierArrows {{ background: {PANEL_BG}; }}
 #PageHint {{ background: transparent; border: none; color: {MUTED}; font-size: 9pt; padding: 2px 10px; }}
 #PageHint:hover {{ color: {ACCENT}; }}
 #SectionHeader {{ border: none; border-bottom: 2px solid {ACCENT}; padding-bottom: 6px; }}
@@ -350,6 +509,51 @@ QSlider::groove:horizontal {{ height: 4px; background: #3a3d46; border: none; }}
 QSlider::sub-page:horizontal {{ background: {ACCENT}; }}
 QSlider::handle:horizontal {{ background: {ACCENT}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
 """
+
+
+CORNER = 10  # containers: the top-right and bottom-left corners are rounded, the other two square
+SMALL_CORNER = 6  # (rows and tiles inside them)
+
+
+def corners(selectors, radius=CORNER):
+    """Style sheet rule rounding the top-right and bottom-left corners of these containers (Record Book's look)."""
+    return (f"{', '.join(selectors)} {{ border-radius: 0; border-top-right-radius: {radius}px; "
+            f"border-bottom-left-radius: {radius}px; }}\n")
+
+
+def corner_path(rect, radius=CORNER, top_right=True, bottom_left=True):
+    """A QPainterPath of rect with those corners rounded, for widgets that paint their own background."""
+    path = QPainterPath()
+    r = radius
+    x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+    path.moveTo(x, y)
+    if top_right:
+        path.lineTo(x + w - r, y)
+        path.quadTo(x + w, y, x + w, y + r)
+    else:
+        path.lineTo(x + w, y)
+    path.lineTo(x + w, y + h)
+    if bottom_left:
+        path.lineTo(x + r, y + h)
+        path.quadTo(x, y + h, x, y + h - r)
+    else:
+        path.lineTo(x, y + h)
+    path.closeSubpath()
+    return path
+
+
+# one look for every page's containers: the cards and panels share a fill and border (Home's cards), and the rows
+# and tiles inside them share theirs (their highlighted states, like a live entry or a needed domain, keep their colours)
+CARD_FILL, CARD_LINE, INSET_FILL = "rgba(28,29,35,0.95)", "#30323c", "rgba(12,13,16,0.45)"
+STYLESHEET += (f"#Card, #Selector, #HomePanel, #HomeCard, #TodoCard, #EndGameHeader, #EndGameCard, #TierListRow "
+               f"{{ background: {CARD_FILL}; border: 1px solid {CARD_LINE}; }}\n"
+               f"QFrame#HomeItem, QPushButton#HomeItem, #TodoHomeRow, #DomainRow, #StygianStats, QPushButton#EntryRow, "
+               f"#StatTile, #InsetTile {{ background: {INSET_FILL}; border: 1px solid {CARD_LINE}; }}\n")
+STYLESHEET += corners(["#Card", "#Selector", "#ElementBoard", "#HomePanel", "#HomeCard", "#TodoCard", "#EndGameHeader",
+                       "#EndGameCard", "#TierListRow", "#TierPool", "#PopupPanel", "#StatTile",
+                       "#InsetTile"])
+STYLESHEET += corners(["QPushButton#HomeItem", "QFrame#HomeItem", "#TodoHomeRow", "#DomainRow", "#StygianStats",
+                       "QPushButton#EntryRow", "QPushButton#SupportCard", "QPushButton#ModeCycle"], SMALL_CORNER)
 
 
 def themed_calendar(date_edit):
@@ -558,6 +762,26 @@ def shape_icon(shape, color="#e8e6e3", size=48):
     elif shape == "buff":  # two stacked up-chevrons
         for top in (m + s * 0.05, m + s * 0.5):
             p.drawPolyline(QPolygonF([QPointF(m + s * 0.1, top + s * 0.4), QPointF(size / 2, top), QPointF(size - m - s * 0.1, top + s * 0.4)]))
+    elif shape == "tiers":  # three stacked bars, shorter going down (a tier list)
+        for n, frac in enumerate((1.0, 0.75, 0.5)):
+            y = m + s * (0.12 + n * 0.38)
+            p.drawLine(QPointF(m, y), QPointF(m + s * frac, y))
+    elif shape == "chart":  # a bar chart: three bars rising
+        p.drawLine(QPointF(m, size - m), QPointF(size - m, size - m))
+        for n, frac in enumerate((0.45, 0.7, 1.0)):
+            x = m + s * (0.18 + n * 0.32)
+            p.drawLine(QPointF(x, size - m - s * 0.1), QPointF(x, size - m - s * frac))
+    elif shape == "todo":  # a checklist: a tick and two lines
+        p.drawPolyline(QPolygonF([QPointF(m, m + s * 0.2), QPointF(m + s * 0.12, m + s * 0.32),
+                                  QPointF(m + s * 0.32, m + s * 0.06)]))
+        p.drawLine(QPointF(m + s * 0.45, m + s * 0.2), QPointF(size - m, m + s * 0.2))
+        p.drawRect(QRectF(m + s * 0.02, m + s * 0.62, s * 0.22, s * 0.22))
+        p.drawLine(QPointF(m + s * 0.45, m + s * 0.73), QPointF(size - m, m + s * 0.73))
+    elif shape == "crown":  # end-game content: a crown
+        p.drawPolygon(QPolygonF([QPointF(m, size - m - s * 0.15), QPointF(m, m + s * 0.25),
+                                 QPointF(m + s * 0.28, m + s * 0.5), QPointF(size / 2, m + s * 0.1),
+                                 QPointF(size - m - s * 0.28, m + s * 0.5), QPointF(size - m, m + s * 0.25),
+                                 QPointF(size - m, size - m - s * 0.15)]))
     elif shape == "gear":  # cog: a ring with eight teeth
         import math
 
@@ -735,6 +959,68 @@ class ColumnGrid(QWidget):
         self.updateGeometry()
 
 
+class FlowLayout(QLayout):
+    """Widgets left to right, wrapping onto a new line when the row is full (Qt's flow layout example)."""
+
+    def __init__(self, parent=None, spacing=6):
+        super().__init__(parent)
+        self._items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(spacing)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._place(QRectF(0, 0, width, 0).toRect(), move=False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._place(rect, move=True)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _place(self, rect, move):
+        margins = self.contentsMargins()
+        left, top = rect.x() + margins.left(), rect.y() + margins.top()
+        right = rect.right() - margins.right()
+        x, y, line = left, top, 0
+        for item in self._items:
+            hint = item.sizeHint()
+            if x + hint.width() > right + 1 and line > 0:
+                x, y, line = left, y + line + self.spacing(), 0
+            if move:
+                from PySide6.QtCore import QRect
+
+                item.setGeometry(QRect(x, y, hint.width(), hint.height()))
+            x += hint.width() + self.spacing()
+            line = max(line, hint.height())
+        return y + line - rect.y() + margins.bottom()
+
+
 class RemoteIcon(QLabel):
     """A QLabel that shows an image from a URL, scaled to a fixed size."""
 
@@ -755,7 +1041,7 @@ class RemoteIcon(QLabel):
 
 
 def card_pixmap(portrait, element_pm, rarity, size=96, logged=False, border=None):
-    """A character card: rarity background, portrait, element symbol top-left, ✔ if logged,
+    """A character card: rarity background, portrait, element symbol top-left (a weapon: its type's), ✔ if logged,
     and an optional coloured border (used for the selected character).
 
     Drawn at 2x so it stays crisp on high-DPI screens.
@@ -795,6 +1081,193 @@ def card_pixmap(portrait, element_pm, rarity, size=96, logged=False, border=None
     p.drawRect(rect.adjusted(inset, inset, -inset, -inset))
     p.end()
     return pm
+
+
+def _soft_blur(pixmap, radius):
+    """Gaussian-blur a (small) picture by radius pixels, same size out."""
+    from PySide6.QtWidgets import QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene
+
+    scene = QGraphicsScene()
+    item = QGraphicsPixmapItem(pixmap)
+    effect = QGraphicsBlurEffect()
+    effect.setBlurRadius(radius)
+    effect.setBlurHints(QGraphicsBlurEffect.QualityHint)
+    item.setGraphicsEffect(effect)
+    scene.addItem(item)
+    out = QPixmap(pixmap.size())
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    scene.render(p, QRectF(out.rect()), QRectF(pixmap.rect()))
+    p.end()
+    return out
+
+
+class Nebula:
+    """A starry haze in one colour, like the backdrop of the game's character screen, that moves: soft blurred
+    clouds (brightest in the middle, behind the character) sway slowly, a thinner mist drifts across them the other
+    way, and stars fade in and out over a still field of faint ones. paint(painter, seconds) draws it at a moment;
+    made once per page size and colour."""
+
+    DRIFT = 0.05  # how far the clouds sway, as a share of the page
+    DIM = 60  # the fog darkened by 10% and then 15% more (1 - 0.9 * 0.85 of 255)
+    SCALE = 6  # the clouds are worked out this many times smaller (they're blurred anyway), then scaled up
+
+    def __init__(self, width, height, color, ratio=1.0, seed=7):
+        import random
+
+        rng = random.Random(seed)
+        self.w, self.h = w, h = max(1, width), max(1, height)
+        base = QColor(color)
+
+        def mix(c, other, share):
+            return QColor(int(c.red() + (other.red() - c.red()) * share),
+                          int(c.green() + (other.green() - c.green()) * share),
+                          int(c.blue() + (other.blue() - c.blue()) * share))
+
+        black, white = QColor(6, 7, 10), QColor(255, 255, 255)
+        self.deep = deep = mix(base, black, 0.74)
+        mid, self.light = mix(base, black, 0.3), mix(base, white, 0.35)
+        light = self.light
+        self.margin = m = int(max(w, h) * self.DRIFT) + 4  # room to sway without showing an edge
+
+        def cloud(p, cx, cy, radius, c, alpha, stretch=1.0):
+            g = QRadialGradient(QPointF(0, 0), radius)
+            for stop, share in ((0.0, 1.0), (0.5, 0.45), (1.0, 0.0)):
+                k = QColor(c)
+                k.setAlpha(int(alpha * share))
+                g.setColorAt(stop, k)
+            p.save()
+            p.translate(cx, cy)
+            p.scale(stretch, 1 / stretch)
+            p.fillRect(QRectF(-radius, -radius, 2 * radius, 2 * radius), g)
+            p.restore()
+
+        def layer(fill, paint, blur):
+            # page plus margin, small, blurred, then scaled up to the screen's resolution
+            sw, sh = max(1, (w + 2 * m) // self.SCALE), max(1, (h + 2 * m) // self.SCALE)
+            small = QPixmap(sw, sh)
+            small.fill(fill)
+            p = QPainter(small)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.translate(m / self.SCALE, m / self.SCALE)  # page coordinates (small) from here
+            paint(p, w / self.SCALE, h / self.SCALE)
+            p.end()
+            out = _soft_blur(small, blur).scaled(int((w + 2 * m) * ratio), int((h + 2 * m) * ratio),
+                                                 Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            out.setDevicePixelRatio(ratio)
+            return out
+
+        def clouds(p, sw, sh):
+            big = max(sw, sh)
+            cloud(p, sw * 0.55, sh * 0.45, big * 0.6, mid, 230)  # the glow behind the character
+            cloud(p, sw * 0.58, sh * 0.42, big * 0.3, light, 110)
+            for _ in range(34):
+                cx, cy = rng.gauss(0.55, 0.28) * sw, rng.gauss(0.5, 0.3) * sh
+                kind = rng.random()
+                if kind < 0.45:
+                    cloud(p, cx, cy, big * rng.uniform(0.15, 0.4), mid, rng.randint(90, 170))
+                elif kind < 0.72:
+                    cloud(p, cx, cy, big * rng.uniform(0.08, 0.22), light, rng.randint(45, 105))
+                else:  # darker patches give the haze its depth
+                    cloud(p, cx, cy, big * rng.uniform(0.12, 0.3), black, rng.randint(50, 110))
+
+        def mist(p, sw, sh):  # long thin wisps, drawn over the clouds and drifting the other way
+            big = max(sw, sh)
+            for _ in range(16):
+                cx, cy = rng.uniform(-0.1, 1.1) * sw, rng.gauss(0.5, 0.25) * sh
+                cloud(p, cx, cy, big * rng.uniform(0.1, 0.25), light if rng.random() < 0.6 else mid,
+                      rng.randint(35, 80), stretch=rng.uniform(1.6, 2.6))
+
+        self.back = layer(deep, clouds, 4)
+        self.mist = layer(Qt.transparent, mist, 6)
+
+        # what stays still: a faint horizon, the darker edges, and a field of faint stars
+        self.front = QPixmap(int(w * ratio), int(h * ratio))
+        self.front.fill(Qt.transparent)
+        self.front.setDevicePixelRatio(ratio)
+        p = QPainter(self.front)
+        p.setRenderHint(QPainter.Antialiasing)
+        band = QLinearGradient(0, h * 0.55, 0, h)
+        for stop, (c, alpha) in ((0.0, (light, 0)), (0.35, (light, 55)), (0.6, (mid, 30)), (1.0, (black, 90))):
+            k = QColor(c)
+            k.setAlpha(alpha)
+            band.setColorAt(stop, k)
+        p.fillRect(QRectF(0, h * 0.55, w, h * 0.45), band)
+        vignette = QRadialGradient(QPointF(w * 0.5, h * 0.45), max(w, h) * 0.75)
+        vignette.setColorAt(0.0, QColor(0, 0, 0, 0))
+        vignette.setColorAt(0.7, QColor(0, 0, 0, 60))
+        vignette.setColorAt(1.0, QColor(0, 0, 0, 170))
+        p.fillRect(QRectF(0, 0, w, h), vignette)
+        p.setPen(Qt.NoPen)
+        for _ in range(int(w * h / 4000)):
+            star = QColor(white if rng.random() < 0.6 else light)
+            star.setAlpha(rng.randint(30, 120))
+            p.setBrush(star)
+            r = rng.uniform(0.5, 1.2)
+            p.drawEllipse(QPointF(rng.random() * w, rng.random() * h), r, r)
+        p.end()
+
+        # stars that pop in and out: (x, y, radius, colour, brightest, seconds per twinkle, phase)
+        self.stars = [(rng.random() * w, rng.random() * h, rng.uniform(0.8, 1.9),
+                       QColor(white if rng.random() < 0.6 else light), rng.randint(150, 255),
+                       rng.uniform(3, 9), rng.random()) for _ in range(int(w * h / 7000))]
+        # a few brighter stars, slower: a slightly larger dot in a soft glow
+        self.sparkles = [(rng.random() * w, rng.random() * h, rng.uniform(2.0, 3.0), rng.uniform(5, 12), rng.random())
+                         for _ in range(16)]
+
+    @staticmethod
+    def _pulse(t, period, phase, sharp=3):
+        """0 most of the time, rising to 1 and back once a period: a star appearing and fading."""
+        import math
+
+        return max(0.0, math.sin(2 * math.pi * (t / period + phase))) ** sharp
+
+    def paint(self, p, t):
+        import math
+
+        w, h, m = self.w, self.h, self.margin
+        p.save()
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(QRectF(0, 0, w, h), self.deep)
+
+        def at(pm, x, y):  # fractional positions, so the slow sway doesn't step pixel by pixel
+            size = pm.deviceIndependentSize()
+            p.drawPixmap(QRectF(x, y, size.width(), size.height()), pm, QRectF(pm.rect()))
+
+        tau = 2 * math.pi
+        at(self.back, -m + m * 0.8 * math.sin(tau * t / 47), -m + m * 0.5 * math.sin(tau * t / 61 + 1.3))
+        p.setOpacity(0.65 + 0.35 * math.sin(tau * t / 23))
+        at(self.mist, -m - m * 0.9 * math.sin(tau * t / 31 + 0.7), -m + m * 0.4 * math.cos(tau * t / 43))
+        p.setOpacity(1)
+        p.fillRect(QRectF(0, 0, w, h), QColor(0, 0, 0, self.DIM))
+        p.drawPixmap(0, 0, self.front)
+
+        p.setPen(Qt.NoPen)
+        for x, y, r, color, peak, period, phase in self.stars:
+            alpha = int(peak * self._pulse(t, period, phase))
+            if alpha < 6:
+                continue
+            k = QColor(color)
+            k.setAlpha(alpha)
+            p.setBrush(k)
+            p.drawEllipse(QPointF(x, y), r, r)
+        for x, y, size, period, phase in self.sparkles:
+            shown = self._pulse(t, period, phase, sharp=2)
+            if shown < 0.03:
+                continue
+            size *= 0.7 + 0.3 * shown
+            glow = QRadialGradient(QPointF(x, y), size * 3)
+            k = QColor(self.light)
+            k.setAlpha(int(120 * shown))
+            glow.setColorAt(0, k)
+            k.setAlpha(0)
+            glow.setColorAt(1, k)
+            p.setBrush(glow)
+            p.drawEllipse(QPointF(x, y), size * 3, size * 3)
+            p.setBrush(QColor(255, 255, 255, int(235 * shown)))
+            p.drawEllipse(QPointF(x, y), size, size)
+        p.restore()
 
 
 def tint(pixmap, color):

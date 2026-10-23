@@ -18,9 +18,12 @@ import sqlite3
 from functools import lru_cache
 
 MODES = ("dark", "light")
-THEMES = ["default", "PYRO", "HYDRO", "DENDRO", "ELECTRO", "ANEMO", "CRYO", "GEO"]
-THEME_NAMES = {"default": "Default (blue)", "PYRO": "Pyro", "HYDRO": "Hydro", "DENDRO": "Dendro",
-               "ELECTRO": "Electro", "ANEMO": "Anemo", "CRYO": "Cryo", "GEO": "Geo"}
+THEMES = ["default", "PYRO", "HYDRO", "DENDRO", "ELECTRO", "ANEMO", "CRYO", "GEO",
+          "FURINA", "MAVUIKA", "MONA", "KEQING"]
+CHARACTER_THEMES = ("FURINA", "MAVUIKA", "MONA", "KEQING")  # (listed after the elements)
+THEME_NAMES = {"default": "Default", "PYRO": "Pyro", "HYDRO": "Hydro", "DENDRO": "Dendro",
+               "ELECTRO": "Electro", "ANEMO": "Anemo", "CRYO": "Cryo", "GEO": "Geo",
+               "FURINA": "Furina", "MAVUIKA": "Mavuika", "MONA": "Mona", "KEQING": "Keqing"}
 ELEMENT_ACCENTS = {
     "PYRO": (239, 122, 53),
     "HYDRO": (76, 194, 241),
@@ -29,20 +32,27 @@ ELEMENT_ACCENTS = {
     "ANEMO": (116, 194, 168),
     "CRYO": (159, 214, 227),
     "GEO": (250, 182, 50),
+    # characters: their outfit's main colour
+    "FURINA": (70, 112, 224),  # the royal blue of her coat
+    "MAVUIKA": (232, 70, 48),  # her fiery red
+    "MONA": (112, 92, 232),  # the astral indigo of her hat and stars
+    "KEQING": (182, 122, 236),  # her lilac
 }
 BLUE = (0, 158, 236)  # the accent the styles are written with
 _BLUES = {BLUE, (26, 170, 240)}  # it and its hover shade
+LIGHT_BLUE = (108, 198, 245)  # the accent's light shade (text on a faint accent background: Home's tags)
 TINT = 0.16  # how much of the theme's hue the greys take
 
 _state = {"mode": "dark", "theme": "default"}
 _accent = BLUE
+_accent_light = LIGHT_BLUE
 _on_accent = (255, 255, 255)
 
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}\b|rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*[\d.]+\s*)?\)")
 
 
 def configure(mode="dark", theme="default"):
-    global _accent, _on_accent
+    global _accent, _accent_light, _on_accent
     _state["mode"] = mode if mode in MODES else "dark"
     _state["theme"] = theme if theme in THEMES else "default"
     base = ELEMENT_ACCENTS.get(_state["theme"], BLUE)
@@ -50,6 +60,9 @@ def configure(mode="dark", theme="default"):
     if _state["mode"] == "light" and l > 0.5:
         l = 0.42  # a deeper accent on the light background
     _accent = tuple(round(c * 255) for c in colorsys.hls_to_rgb(h, l, s))
+    # its light shade: lighter on the dark background, the accent itself on the light one
+    light = l if _state["mode"] == "light" else max(l, 0.69)
+    _accent_light = tuple(round(c * 255) for c in colorsys.hls_to_rgb(h, light, s))
     # text on accent-coloured buttons: white, or dark on a pale accent
     _on_accent = (21, 23, 28) if _luminance(_accent) > 0.55 else (255, 255, 255)
     css.cache_clear()
@@ -90,6 +103,8 @@ def _luminance(rgb):
 def _transform(r, g, b):
     if (r, g, b) in _BLUES:
         return _accent
+    if (r, g, b) == LIGHT_BLUE:
+        return _accent_light
     h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
     light = _state["mode"] == "light"
     neutral = s < 0.22 or l < 0.06 or l > 0.94
@@ -125,6 +140,7 @@ def _recolor(text):
 
 
 _BLOCK = re.compile(r"\{[^{}]*\}")
+FIXED = "/* fixed */"  # put in a style block to keep its colours the same in every look
 _ON_BLUE = re.compile(r"background(?:-color)?\s*:\s*(?:#009eec|#1aaaf0)\b", re.I)
 _WHITE_TEXT = re.compile(r"(?<![-\w])color\s*:\s*#ffffff", re.I)
 
@@ -135,15 +151,21 @@ def css(text):
     if is_default() or not text or ("#" not in text and "rgb" not in text):
         return text
     on_accent = "#%02x%02x%02x" % _on_accent
+    kept = []
 
     def block(m):
         part = m.group(0)
+        if FIXED in part:  # drawn on a picture-like colour (a rarity band): its colours stay as written
+            kept.append(part)
+            return f"{{@@KEEP{len(kept) - 1}@@}}"
         if _ON_BLUE.search(part):  # text on an accent-coloured button stays readable on it
             part = _WHITE_TEXT.sub("color: @@ON_ACCENT@@", part)
         return part
 
-    text = _BLOCK.sub(block, text)
-    return _recolor(text).replace("@@ON_ACCENT@@", on_accent)
+    text = _recolor(_BLOCK.sub(block, text)).replace("@@ON_ACCENT@@", on_accent)
+    for i, part in enumerate(kept):
+        text = text.replace(f"{{@@KEEP{i}@@}}", part)
+    return text
 
 
 def color(hex_text):

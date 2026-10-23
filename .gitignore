@@ -19,3 +19,6 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Pictures saved by the Tier List Maker
+Saved Tier Lists/
